@@ -14,14 +14,16 @@ import io
 import json
 import os
 import random
+import re
 import sys
 import time
+import unicodedata
 import urllib.parse
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import requests
-from PIL import Image
+from PIL import Image, ImageDraw
 
 RAIZ = Path(__file__).parent
 ESTADO = RAIZ / "estado.json"
@@ -80,6 +82,28 @@ def ajustar_imagen(img):
         nuevo = int(ancho / objetivo)
         img = img.crop((0, (alto - nuevo) // 2, ancho, (alto + nuevo) // 2))
     img = img.resize((1080, 1350), Image.LANCZOS)
+    return poner_logo(img)
+
+
+def enmarcar(img):
+    """Para capturas de las apps/juegos: la imagen entera, sin recortar, sobre un fondo con los colores
+    de la marca (1080x1350). Así las capturas horizontales no pierden los costados."""
+    fondo = Image.new("RGB", (1080, 1350))
+    trazo = ImageDraw.Draw(fondo)
+    arriba, abajo = (20, 24, 61), (76, 62, 140)  # azul profundo -> violeta
+    for y in range(1350):
+        t = y / 1349
+        trazo.line([(0, y), (1080, y)], fill=tuple(int(a + (b - a) * t) for a, b in zip(arriba, abajo)))
+    img = img.convert("RGB")
+    escala = min((1080 - 2 * 60) / img.width, (1350 - 2 * 110) / img.height)
+    img = img.resize((int(img.width * escala), int(img.height * escala)), Image.LANCZOS)
+    mascara = Image.new("L", img.size, 0)
+    ImageDraw.Draw(mascara).rounded_rectangle([(0, 0), img.size], radius=28, fill=255)
+    fondo.paste(img, ((1080 - img.width) // 2, (1350 - img.height) // 2), mascara)
+    return poner_logo(fondo)
+
+
+def poner_logo(img):
     if LOGO.exists():
         logo = Image.open(LOGO).convert("RGBA")
         lw = 160
@@ -133,6 +157,7 @@ Respondé SOLO con un JSON con estas claves:
 - "tema": título corto interno del post (máx 8 palabras)
 - "caption": texto del post listo para Instagram, con saltos de línea, emojis con moderación,
   un gancho fuerte en la primera línea y un llamado a la acción al final. Máx 1500 caracteres.
+  Texto plano: Instagram no muestra negritas, así que no uses ** ni otro formato markdown.
 - "hashtags": string con 8 a 12 hashtags relevantes separados por espacio
 - "prompt_imagen": {prompt_img}
 """.format(
@@ -185,6 +210,31 @@ def imagen_pollinations(prompt):
             pass
         time.sleep(10 * (intento + 1))
     raise RuntimeError("No se pudo generar la imagen con Pollinations")
+
+
+def normalizar(texto):
+    return unicodedata.normalize("NFKD", texto.lower()).encode("ascii", "ignore").decode()
+
+
+def producto_de(pedido):
+    """La carpeta de fotos/ cuyo nombre está en el pedido (todas sus palabras). Si hay varias, la más específica:
+    "la app Vagón" -> fotos/Vagón app; "el juego Vagón" -> fotos/vagón."""
+    palabras = set(re.findall(r"\w+", normalizar(pedido)))
+    candidatas = [d for d in FOTOS.iterdir() if d.is_dir() and set(re.findall(r"\w+", normalizar(d.name))) <= palabras]
+    return max(candidatas, key=lambda d: len(d.name.split()), default=None)
+
+
+def producto_que_toca(nombres, historial):
+    """De los productos del calendario, el que hace más tiempo que no sale."""
+    ultimo = {normalizar(h["foto"].split("/")[0]): i for i, h in enumerate(historial) if "/" in (h.get("foto") or "")}
+    return min(nombres, key=lambda n: ultimo.get(normalizar(n), -1))
+
+
+def foto_de_producto(carpeta, historial):
+    """La foto de la carpeta que hace más tiempo que no se usa (las nunca usadas primero)."""
+    fotos = [f for f in sorted(carpeta.iterdir()) if f.suffix.lower() in EXT_FOTOS]
+    ultimo = {h.get("foto"): i for i, h in enumerate(historial)}
+    return min(fotos, key=lambda f: ultimo.get(str(f.relative_to(FOTOS)), -1), default=None)
 
 
 def elegir_foto_propia(historial):
@@ -256,15 +306,24 @@ def publicar_en_instagram(post):
 def crear_post(estado, historial, pedido=None):
     calendario = leer_json(CALENDARIO, {})
     dia = calendario.get(DIAS[ahora().weekday()], {"tipo": "post libre sobre los servicios de la empresa"})
+    carpeta = None
     if pedido:  # tema pedido por Telegram con "/nuevo <tema>": manda sobre el calendario
         dia = {"tipo": 'post a pedido del dueño: "{}". Si menciona un producto propio, usá la info de '
                        '"Nuestros productos" y no inventes datos que no estén ahí.'.format(pedido)}
-    foto = elegir_foto_propia(historial) if dia.get("foto_propia") else None
+        carpeta = producto_de(pedido)
+    elif dia.get("productos"):  # días de promo: rota entre los productos de la lista
+        carpeta = producto_de(producto_que_toca(dia["productos"], historial))
+        dia = {"tipo": '{} Hoy el post es sobre: "{}" (usá su info de "Nuestros productos" y no inventes '
+                       'datos que no estén ahí).'.format(dia["tipo"], carpeta.name)}
+    if carpeta:
+        foto = foto_de_producto(carpeta, historial)
+    else:
+        foto = elegir_foto_propia(historial) if dia.get("foto_propia") else None
     temas = [h["tema"] for h in historial]
     id_post = ahora().strftime("%Y%m%d-%H%M%S")
 
     if foto:
-        img = ajustar_imagen(Image.open(foto))
+        img = enmarcar(Image.open(foto)) if carpeta else ajustar_imagen(Image.open(foto))
         buf = io.BytesIO()
         img.save(buf, "JPEG", quality=85)
         datos = pedir_texto(dia["tipo"], temas, buf.getvalue())
@@ -277,7 +336,7 @@ def crear_post(estado, historial, pedido=None):
     img.save(POSTS / nombre, "JPEG", quality=90)
     post = {
         "id": id_post, "tema": datos["tema"], "caption": datos["caption"], "hashtags": datos["hashtags"],
-        "imagen": nombre, "foto": foto.name if foto else None, "aprobado": AUTO_PUBLICAR, "pedido": pedido,
+        "imagen": nombre, "foto": str(foto.relative_to(FOTOS)) if foto else None, "aprobado": AUTO_PUBLICAR, "pedido": pedido,
     }
     estado["pendiente"] = post
     if AUTO_PUBLICAR:
