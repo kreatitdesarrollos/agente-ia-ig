@@ -4,6 +4,7 @@ Agente de Instagram para Kreatit.
 Comandos:
   python agente.py generar        -> crea el post del día y lo manda a Telegram para aprobar
   python agente.py revisar        -> lee botones/respuestas de Telegram y publica lo aprobado
+                                     (/nuevo en Telegram crea un post extra; /nuevo <tema> sobre ese tema)
   python agente.py verificar      -> chequea claves y muestra tu IG_USER_ID
   python agente.py renovar-token  -> renueva el token de Instagram (imprime el nuevo)
 """
@@ -252,9 +253,12 @@ def publicar_en_instagram(post):
 
 # ---------- flujo principal ----------
 
-def crear_post(estado, historial):
+def crear_post(estado, historial, pedido=None):
     calendario = leer_json(CALENDARIO, {})
     dia = calendario.get(DIAS[ahora().weekday()], {"tipo": "post libre sobre los servicios de la empresa"})
+    if pedido:  # tema pedido por Telegram con "/nuevo <tema>": manda sobre el calendario
+        dia = {"tipo": 'post a pedido del dueño: "{}". Si menciona un producto propio, usá la info de '
+                       '"Nuestros productos" y no inventes datos que no estén ahí.'.format(pedido)}
     foto = elegir_foto_propia(historial) if dia.get("foto_propia") else None
     temas = [h["tema"] for h in historial]
     id_post = ahora().strftime("%Y%m%d-%H%M%S")
@@ -273,7 +277,7 @@ def crear_post(estado, historial):
     img.save(POSTS / nombre, "JPEG", quality=90)
     post = {
         "id": id_post, "tema": datos["tema"], "caption": datos["caption"], "hashtags": datos["hashtags"],
-        "imagen": nombre, "foto": foto.name if foto else None, "aprobado": AUTO_PUBLICAR,
+        "imagen": nombre, "foto": foto.name if foto else None, "aprobado": AUTO_PUBLICAR, "pedido": pedido,
     }
     estado["pendiente"] = post
     if AUTO_PUBLICAR:
@@ -316,16 +320,17 @@ def cmd_revisar():
                 avisar("👍 Aprobado, publicando...")
             elif accion == "otra":
                 avisar("🔄 Generando otra versión...")
-                crear_post(estado, historial)
+                crear_post(estado, historial, pend.get("pedido"))
             elif accion == "no":
                 estado["pendiente"] = None
                 avisar("🗑️ Descartado. Mandá /nuevo si querés otro.")
 
         elif "message" in u and str(u["message"]["chat"]["id"]) == TG_CHAT:
             texto = u["message"].get("text", "").strip()
-            if texto == "/nuevo":
-                avisar("✨ Generando un post nuevo...")
-                crear_post(estado, historial)
+            if texto.split(" ")[0].split("@")[0] == "/nuevo":
+                pedido = texto.partition(" ")[2].strip() or None
+                avisar("✨ Generando un post nuevo" + (" sobre: " + pedido if pedido else "") + "...")
+                crear_post(estado, historial, pedido)
             elif texto == "/start":
                 avisar("Hola! Tu chat_id es {}".format(u["message"]["chat"]["id"]))
             elif texto and pend and not pend.get("aprobado"):
