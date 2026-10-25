@@ -32,7 +32,7 @@ FOTOS = RAIZ / "fotos"
 POSTS = RAIZ / "posts"
 
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "")
 CF_API_TOKEN = os.environ.get("CF_API_TOKEN", "")
 TG_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
@@ -95,10 +95,13 @@ def gemini(prompt, imagen_jpg=None):
         "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent".format(GEMINI_MODEL),
         headers={"x-goog-api-key": GEMINI_KEY},
         json={"contents": [{"parts": partes}], "generationConfig": {"responseMimeType": "application/json"}},
-        timeout=120,
+        timeout=300,
     )
+    if not r.ok:
+        print("Gemini respondió:", r.text[:1000])
     r.raise_for_status()
-    return json.loads(r.json()["candidates"][0]["content"]["parts"][0]["text"])
+    partes = r.json()["candidates"][0]["content"]["parts"]
+    return json.loads("".join(p["text"] for p in partes if "text" in p and not p.get("thought")))
 
 
 def pedir_texto(tipo_post, temas_previos, foto=None):
