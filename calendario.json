@@ -1,0 +1,24 @@
+{
+  "lunes": {
+    "tipo": "Agentes de IA para WhatsApp: un caso de uso concreto (hotel, consultorio, comercio, etc.) y cómo le cambia el día a día al negocio"
+  },
+  "martes": {
+    "tipo": "Tip práctico de tecnología o productividad para dueños de negocios"
+  },
+  "miercoles": {
+    "tipo": "Sistemas de gestión para sindicatos, mutuales u hoteles: un problema típico y cómo lo resuelve un sistema a medida"
+  },
+  "jueves": {
+    "tipo": "Detrás de escena de Kreatit: equipo, proyecto real o proceso de trabajo",
+    "foto_propia": true
+  },
+  "viernes": {
+    "tipo": "Apps y juegos para celular: algo creativo, divertido o una idea de app que podría tener un negocio"
+  },
+  "sabado": {
+    "tipo": "Dato curioso sobre IA o tecnología, terminando con una pregunta para que la gente comente"
+  },
+  "domingo": {
+    "tipo": "Post de invitación: '¿Tenés una idea de app o sistema?' mostrando qué puede hacer Kreatit por su negocio"
+  }
+}
