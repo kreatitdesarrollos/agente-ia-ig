@@ -5,7 +5,7 @@
   "martes": {
     "tipo": "Promo de la app Vagón: mostrá una función concreta (arribos en vivo, estado del servicio, alertas) con una situación real del que viaja en tren, e invitá a descargarla",
     "productos": [
-      "Vagón app"
+      "app vagon"
     ]
   },
   "miercoles": {
@@ -18,18 +18,18 @@
   "viernes": {
     "tipo": "Promo de uno de los juegos de la app Vagón: contá algo divertido o una situación del juego que los del tren reconozcan, e invitá a descargar Vagón para jugarlo",
     "productos": [
-      "Jefe de trenes",
-      "vagón",
-      "Sofi"
+      "jefe de trenes",
+      "vagon",
+      "sofi"
     ]
   },
   "sabado": {
     "tipo": "Dato curioso o pregunta para comentar sobre los trenes argentinos (estaciones, ramales, historia, vida en el andén), conectándolo con la app o uno de sus juegos",
     "productos": [
-      "Vagón app",
-      "Jefe de trenes",
-      "vagón",
-      "Sofi"
+      "app vagon",
+      "jefe de trenes",
+      "vagon",
+      "sofi"
     ]
   },
   "domingo": {

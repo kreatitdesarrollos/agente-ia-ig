@@ -23,7 +23,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import requests
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 RAIZ = Path(__file__).parent
 ESTADO = RAIZ / "estado.json"
@@ -33,6 +33,7 @@ MARCA = RAIZ / "marca.md"
 LOGO = RAIZ / "logo.png"
 FOTOS = RAIZ / "fotos"
 POSTS = RAIZ / "posts"
+FUENTES = RAIZ / "fuentes"
 
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
@@ -54,6 +55,7 @@ URL_BASE = os.environ.get("URL_BASE_IMAGENES") or "https://raw.githubusercontent
 
 DIAS = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"]
 EXT_FOTOS = {".jpg", ".jpeg", ".png", ".webp"}
+PIE_PIEZA = "Disponible en Google Play  ·  Muy pronto en iPhone"
 
 
 # ---------- utilidades ----------
@@ -85,22 +87,102 @@ def ajustar_imagen(img):
     return poner_logo(img)
 
 
-def enmarcar(img):
-    """Para capturas de las apps/juegos: la imagen entera, sin recortar, sobre un fondo con los colores
-    de la marca (1080x1350). Así las capturas horizontales no pierden los costados."""
-    fondo = Image.new("RGB", (1080, 1350))
-    trazo = ImageDraw.Draw(fondo)
-    arriba, abajo = (20, 24, 61), (76, 62, 140)  # azul profundo -> violeta
-    for y in range(1350):
-        t = y / 1349
-        trazo.line([(0, y), (1080, y)], fill=tuple(int(a + (b - a) * t) for a, b in zip(arriba, abajo)))
+def degradado(ancho, alto, arriba=(20, 24, 61), abajo=(76, 62, 140)):
+    img = Image.new("RGB", (ancho, alto))
+    trazo = ImageDraw.Draw(img)
+    for y in range(alto):
+        t = y / (alto - 1)
+        trazo.line([(0, y), (ancho, y)], fill=tuple(int(a + (b - a) * t) for a, b in zip(arriba, abajo)))
+    return img
+
+
+def cubrir(img, ancho, alto):
+    """Escala y recorta al centro para llenar ancho x alto."""
     img = img.convert("RGB")
-    escala = min((1080 - 2 * 60) / img.width, (1350 - 2 * 110) / img.height)
-    img = img.resize((int(img.width * escala), int(img.height * escala)), Image.LANCZOS)
-    mascara = Image.new("L", img.size, 0)
-    ImageDraw.Draw(mascara).rounded_rectangle([(0, 0), img.size], radius=28, fill=255)
-    fondo.paste(img, ((1080 - img.width) // 2, (1350 - img.height) // 2), mascara)
-    return poner_logo(fondo)
+    escala = max(ancho / img.width, alto / img.height)
+    img = img.resize((int(img.width * escala) + 1, int(img.height * escala) + 1), Image.LANCZOS)
+    x, y = (img.width - ancho) // 2, (img.height - alto) // 2
+    return img.crop((x, y, x + ancho, y + alto))
+
+
+def partir_lineas(trazo, texto, fuente, ancho_max):
+    lineas, actual = [], ""
+    for palabra in texto.split():
+        prueba = (actual + " " + palabra).strip()
+        if actual and trazo.textlength(prueba, font=fuente) > ancho_max:
+            lineas.append(actual)
+            actual = palabra
+        else:
+            actual = prueba
+    return lineas + [actual] if actual else lineas
+
+
+def texto_centrado(trazo, y, texto, nombre_fuente, tam, color, ancho_max=960, max_lineas=2, minimo=48):
+    """Escribe el texto centrado achicando la letra hasta que entre en max_lineas. Devuelve la y siguiente."""
+    while True:
+        fuente = ImageFont.truetype(str(FUENTES / nombre_fuente), tam)
+        lineas = partir_lineas(trazo, texto, fuente, ancho_max)
+        if len(lineas) <= max_lineas or tam <= minimo:
+            break
+        tam -= 6
+    for linea in lineas[:max_lineas]:
+        x = (1080 - trazo.textlength(linea, font=fuente)) / 2
+        trazo.text((x + 3, y + 4), linea, font=fuente, fill=(0, 0, 0))  # sombrita para que se lea sobre cualquier fondo
+        trazo.text((x, y), linea, font=fuente, fill=color)
+        y += int(tam * 1.12)
+    return y
+
+
+def pieza_publicitaria(captura, fondo, titular, bajada, boton):
+    """Para las apps y juegos: fondo hecho con IA + la captura real dentro de un celular + título, bajada y botón.
+    Los textos los pone el código (no la IA de imágenes) para que salgan nítidos y sin errores."""
+    ancho, alto = 1080, 1350
+    lienzo = cubrir(fondo, ancho, alto) if fondo else degradado(ancho, alto)
+    # oscurece arriba y abajo para que los textos se lean
+    velo = Image.new("L", (ancho, alto))
+    trazo_velo = ImageDraw.Draw(velo)
+    for y in range(alto):
+        trazo_velo.line([(0, y), (ancho, y)], fill=int(max(0, 1 - y / 560) * 215 + max(0, (y - alto + 420) / 420) * 225))
+    lienzo = Image.composite(Image.new("RGB", (ancho, alto), (10, 12, 35)), lienzo, velo)
+
+    # textos arriba; el celular va en el espacio que queda entre los textos y el botón
+    trazo = ImageDraw.Draw(lienzo)
+    y = texto_centrado(trazo, 70, titular.upper(), "Poppins-Black.ttf", 104, (255, 255, 255))
+    y = texto_centrado(trazo, y + 8, bajada, "Poppins-SemiBold.ttf", 42, (255, 196, 110), max_lineas=2, minimo=30)
+    arriba, abajo = y + 30, alto - 260
+
+    captura = captura.convert("RGB")
+    horizontal = captura.width > captura.height
+    borde = 20
+    alto_libre = abajo - arriba - 2 * borde - 70  # 70: lo que crece al inclinarlo
+    caja = (880, min(460, alto_libre)) if horizontal else (390, alto_libre)
+    escala = min(caja[0] / captura.width, caja[1] / captura.height)
+    captura = captura.resize((int(captura.width * escala), int(captura.height * escala)), Image.LANCZOS)
+    tel = Image.new("RGBA", (captura.width + 2 * borde, captura.height + 2 * borde), (0, 0, 0, 0))
+    ImageDraw.Draw(tel).rounded_rectangle([(0, 0), (tel.width - 1, tel.height - 1)], radius=58,
+                                          fill=(14, 14, 20, 255), outline=(90, 90, 110, 255), width=4)
+    pantalla = Image.new("L", captura.size, 0)
+    ImageDraw.Draw(pantalla).rounded_rectangle([(0, 0), captura.size], radius=40, fill=255)
+    tel.paste(captura, (borde, borde), pantalla)
+    tel = tel.rotate(4 if horizontal else -4, expand=True, resample=Image.BICUBIC)
+    margen = 80  # la sombra difuminada necesita lugar alrededor, si no se corta en un recuadro
+    alfa = Image.new("L", (tel.width + 2 * margen, tel.height + 2 * margen), 0)
+    alfa.paste(tel.getchannel("A").point(lambda a: a * 0.6), (margen, margen))
+    sombra = Image.new("RGBA", alfa.size, (0, 0, 0, 0))
+    sombra.putalpha(alfa.filter(ImageFilter.GaussianBlur(24)))
+    cx, cy = ancho // 2, (arriba + abajo) // 2
+    lienzo.paste(sombra, (cx - tel.width // 2 - margen, cy - tel.height // 2 - margen + 28), sombra)
+    lienzo.paste(tel, (cx - tel.width // 2, cy - tel.height // 2), tel)
+
+    fuente_boton = ImageFont.truetype(str(FUENTES / "Poppins-SemiBold.ttf"), 44)
+    ancho_boton = int(trazo.textlength(boton, font=fuente_boton)) + 110
+    x0, y0 = (ancho - ancho_boton) // 2, alto - 230
+    trazo.rounded_rectangle([(x0, y0), (x0 + ancho_boton, y0 + 96)], radius=48, fill=(239, 108, 44))
+    trazo.text(((ancho - trazo.textlength(boton, font=fuente_boton)) / 2, y0 + 18), boton, font=fuente_boton, fill="white")
+    fuente_pie = ImageFont.truetype(str(FUENTES / "Poppins-SemiBold.ttf"), 28)
+    trazo.text(((ancho - trazo.textlength(PIE_PIEZA, font=fuente_pie)) / 2, alto - 105), PIE_PIEZA,
+               font=fuente_pie, fill=(225, 228, 245))
+    return poner_logo(lienzo)
 
 
 def poner_logo(img):
@@ -143,7 +225,7 @@ def gemini(prompt, imagen_jpg=None):
     raise ultimo_error
 
 
-def pedir_texto(tipo_post, temas_previos, foto=None):
+def pedir_texto(tipo_post, temas_previos, foto=None, pieza=False):
     prompt = """{marca}
 
 ---
@@ -160,14 +242,26 @@ Respondé SOLO con un JSON con estas claves:
   Texto plano: Instagram no muestra negritas, así que no uses ** ni otro formato markdown.
 - "hashtags": string con 8 a 12 hashtags relevantes separados por espacio
 - "prompt_imagen": {prompt_img}
-""".format(
+{claves_pieza}""".format(
         marca=MARCA.read_text(encoding="utf-8"),
         dia=DIAS[ahora().weekday()],
         fecha=ahora().strftime("%d/%m/%Y"),
         tipo=tipo_post,
         previos=", ".join(temas_previos[-30:]) or "ninguno",
-        extra="Te adjunto la foto real que vamos a publicar: escribí el texto basándote en lo que se ve." if foto else "",
-        prompt_img='""' if foto else (
+        extra=(
+            "Te adjunto una captura real del producto. Mirala con atención y usá detalles concretos que se ven "
+            "(lugares, personajes, obstáculos, situaciones) para que el post sea específico y no genérico."
+        ) if pieza else "Te adjunto la foto real que vamos a publicar: escribí el texto basándote en lo que se ve." if foto else "",
+        claves_pieza="""- "titular": gancho para poner GRANDE en la imagen, máx 6 palabras, que dé ganas de jugar o descargar
+  (ej.: "¿Llegás antes que el tren?"). Sin hashtags ni emojis.
+- "bajada": frase corta debajo del titular, máx 10 palabras, que diga qué es (ej.: "El juego de Sofi, gratis en la app Vagón").
+- "boton": texto del botón, máx 5 palabras (ej.: "Jugalo gratis en Vagón" o "Descargá Vagón gratis").
+""" if pieza else "",
+        prompt_img=(
+            "descripción EN INGLÉS de una imagen de FONDO ambientada en el mundo de la captura (mismo estilo visual: "
+            "si es pixel art, pixel art; si es 3D, 3D), vibrante y llamativa, sin texto, sin celulares ni pantallas, "
+            "con el centro de la imagen más despejado."
+        ) if pieza else '""' if foto else (
             "descripción EN INGLÉS de la imagen a generar: estilo moderno, tecnológico, colores de la marca, "
             "sin texto ni letras dentro de la imagen, composición vertical."
         ),
@@ -311,10 +405,12 @@ def crear_post(estado, historial, pedido=None):
         dia = {"tipo": 'post a pedido del dueño: "{}". Si menciona un producto propio, usá la info de '
                        '"Nuestros productos" y no inventes datos que no estén ahí.'.format(pedido)}
         carpeta = producto_de(pedido)
+        if carpeta:
+            dia["tipo"] += ' Es el producto que figura con "/nuevo {}" en "Nuestros productos".'.format(carpeta.name)
     elif dia.get("productos"):  # días de promo: rota entre los productos de la lista
         carpeta = producto_de(producto_que_toca(dia["productos"], historial))
-        dia = {"tipo": '{} Hoy el post es sobre: "{}" (usá su info de "Nuestros productos" y no inventes '
-                       'datos que no estén ahí).'.format(dia["tipo"], carpeta.name)}
+        dia = {"tipo": '{} Hoy el post es sobre el producto que figura con "/nuevo {}" en "Nuestros '
+                       'productos" (usá su info y no inventes datos que no estén ahí).'.format(dia["tipo"], carpeta.name)}
     if carpeta:
         foto = foto_de_producto(carpeta, historial)
     else:
@@ -322,8 +418,20 @@ def crear_post(estado, historial, pedido=None):
     temas = [h["tema"] for h in historial]
     id_post = ahora().strftime("%Y%m%d-%H%M%S")
 
-    if foto:
-        img = enmarcar(Image.open(foto)) if carpeta else ajustar_imagen(Image.open(foto))
+    if foto and carpeta:  # app o juego: pieza publicitaria con la captura real
+        captura = Image.open(foto)
+        buf = io.BytesIO()
+        captura.convert("RGB").save(buf, "JPEG", quality=85)
+        datos = pedir_texto(dia["tipo"], temas, buf.getvalue(), pieza=True)
+        try:
+            fondo = generar_imagen(datos["prompt_imagen"])
+        except Exception as e:  # sin fondo IA queda un degradado con los colores de la marca
+            print("No se pudo generar el fondo:", e, file=sys.stderr)
+            fondo = None
+        img = pieza_publicitaria(captura, fondo, datos.get("titular", ""), datos.get("bajada", ""),
+                                 datos.get("boton") or "Descargá Vagón gratis")
+    elif foto:
+        img = ajustar_imagen(Image.open(foto))
         buf = io.BytesIO()
         img.save(buf, "JPEG", quality=85)
         datos = pedir_texto(dia["tipo"], temas, buf.getvalue())
