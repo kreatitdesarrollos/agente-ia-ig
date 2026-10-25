@@ -33,6 +33,8 @@ POSTS = RAIZ / "posts"
 
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+# si el principal está saturado o no existe, se prueban estos en orden
+GEMINI_RESPALDO = ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-lite-latest"]
 CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "")
 CF_API_TOKEN = os.environ.get("CF_API_TOKEN", "")
 TG_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
@@ -91,17 +93,29 @@ def gemini(prompt, imagen_jpg=None):
     partes = [{"text": prompt}]
     if imagen_jpg:
         partes.append({"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(imagen_jpg).decode()}})
-    r = requests.post(
-        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent".format(GEMINI_MODEL),
-        headers={"x-goog-api-key": GEMINI_KEY},
-        json={"contents": [{"parts": partes}], "generationConfig": {"responseMimeType": "application/json"}},
-        timeout=300,
-    )
-    if not r.ok:
-        print("Gemini respondió:", r.text[:1000])
-    r.raise_for_status()
-    partes = r.json()["candidates"][0]["content"]["parts"]
-    return json.loads("".join(p["text"] for p in partes if "text" in p and not p.get("thought")))
+    cuerpo = {"contents": [{"parts": partes}], "generationConfig": {"responseMimeType": "application/json"}}
+    modelos = [GEMINI_MODEL] + [m for m in GEMINI_RESPALDO if m != GEMINI_MODEL]
+    ultimo_error = None
+    for intento in range(4):  # varias vueltas por todos los modelos, esperando cada vez más
+        for modelo in modelos:
+            try:
+                r = requests.post(
+                    "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent".format(modelo),
+                    headers={"x-goog-api-key": GEMINI_KEY}, json=cuerpo, timeout=180,
+                )
+            except requests.exceptions.RequestException as e:
+                print("Gemini ({}) no respondió: {}".format(modelo, e))
+                ultimo_error = e
+                continue
+            if r.ok:
+                partes_resp = r.json()["candidates"][0]["content"]["parts"]
+                return json.loads("".join(p["text"] for p in partes_resp if "text" in p and not p.get("thought")))
+            print("Gemini ({}) respondió {}: {}".format(modelo, r.status_code, r.text[:500]))
+            ultimo_error = requests.HTTPError("{} en {}".format(r.status_code, modelo), response=r)
+            if r.status_code in (400, 401, 403):  # clave mala: no tiene sentido reintentar
+                raise ultimo_error
+        time.sleep(30 * (intento + 1))
+    raise ultimo_error
 
 
 def pedir_texto(tipo_post, temas_previos, foto=None):

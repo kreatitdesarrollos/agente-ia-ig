@@ -32,6 +32,8 @@ jobs:
       AUTO_PUBLICAR: ${{ vars.AUTO_PUBLICAR || 'false' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}   # la última versión de la rama, no la del momento en que se encoló
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -64,4 +66,10 @@ jobs:
           git config user.name "kreatit-bot"
           git config user.email "bot@users.noreply.github.com"
           git add -A
-          git diff --cached --quiet || (git commit -m "agente: ${{ steps.cmd.outputs.c }}" && git push)
+          git diff --cached --quiet || git commit -m "agente: ${{ steps.cmd.outputs.c }}"
+          # si mientras corría alguien subió cambios (vos u otra ejecución), los trae antes de subir
+          for i in 1 2 3; do
+            git pull --rebase -X theirs && git push && exit 0
+            sleep 5
+          done
+          exit 1
