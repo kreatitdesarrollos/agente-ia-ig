@@ -1,4 +1,13 @@
 {
-  "offset": 916578414,
-  "pendiente": null
+  "offset": 916578415,
+  "pendiente": {
+    "id": "20261025-163304",
+    "tema": "Hacé crecer tu negocio con soluciones digitales a medida",
+    "caption": "¿Tenés una idea en mente para hacer crecer tu negocio pero no sabés por dónde empezar? 💡\n\nEn Kreatit convertimos proyectos en herramientas reales que trabajan para vos todos los días, sin complicaciones técnicas:\n\n📱 Apps móviles a medida para estar en el celular de tus clientes y vender más fácil.\n\n🤖 Agentes de IA en WhatsApp que atienden consultas, agendan turnos y responden las 24 horas, incluso cuando estás descansando.\n\n⚙️ Sistemas de gestión para ordenar cobros, afiliados, reservas y tareas diarias en pymes, hoteles u organizaciones.\n\nEl objetivo es claro: que ahorres tiempo, no pierdas clientes y tengas todo bajo control.\n\n💬 ¿Hablamos de tu proyecto? Escribinos un mensaje directo o un WhatsApp y coordinemos una consulta sin cargo.",
+    "hashtags": "#Kreatit #DesarrolloDeSoftware #AppsMoviles #InteligenciaArtificial #Automatizacion #Pymes #GestionEmpresarial #SistemasAMedida #InnovacionDigital #Atencion247",
+    "imagen": "20261025-163304.jpg",
+    "foto": null,
+    "aprobado": false,
+    "pedido": null
+  }
 }
