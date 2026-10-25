@@ -10,6 +10,7 @@ Comandos:
 """
 import base64
 import datetime as dt
+import hashlib
 import io
 import json
 import os
@@ -44,6 +45,10 @@ CF_API_TOKEN = os.environ.get("CF_API_TOKEN", "")
 TG_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "")
 IG_TOKEN = os.environ.get("IG_TOKEN", "")
+# Portero (Cloudflare Worker, carpeta portero/): recibe a Telegram al instante y guarda los mensajes en una cola.
+# Si no está configurado, se leen los mensajes con getUpdates como antes.
+PORTERO_URL = os.environ.get("PORTERO_URL", "").rstrip("/")
+TG_UPDATE = os.environ.get("TG_UPDATE", "")  # el mensaje que despertó al agente, si vino del portero
 IG_USER_ID = os.environ.get("IG_USER_ID", "")
 IG_API = "https://graph.instagram.com/" + os.environ.get("IG_API_VERSION", "v23.0")
 AUTO_PUBLICAR = os.environ.get("AUTO_PUBLICAR", "false").lower() == "true"
@@ -347,6 +352,26 @@ def tg(metodo, **kwargs):
     return r.json()["result"]
 
 
+def leer_updates(estado):
+    if not PORTERO_URL:
+        return tg("getUpdates", data={"offset": estado.get("offset", 0), "timeout": 0})
+    clave = {"X-Clave": hashlib.sha256(TG_TOKEN.encode()).hexdigest()}
+    r = requests.get(PORTERO_URL + "/pendientes", headers=clave, timeout=30)
+    r.raise_for_status()
+    updates = {u["update_id"]: u for u in r.json()}
+    if TG_UPDATE:
+        u = json.loads(TG_UPDATE)
+        updates[u["update_id"]] = u
+    # la cola puede mostrar unos segundos algo ya procesado: el offset evita hacerlo dos veces
+    return [updates[i] for i in sorted(updates) if i >= estado.get("offset", 0)]
+
+
+def confirmar_updates(updates):
+    if PORTERO_URL and updates:
+        requests.post(PORTERO_URL + "/confirmar", json={"ids": [u["update_id"] for u in updates]},
+                      headers={"X-Clave": hashlib.sha256(TG_TOKEN.encode()).hexdigest()}, timeout=30)
+
+
 def avisar(texto):
     tg("sendMessage", data={"chat_id": TG_CHAT, "text": texto})
 
@@ -465,7 +490,7 @@ def cmd_generar():
 def cmd_revisar():
     estado = leer_json(ESTADO, {})
     historial = leer_json(HISTORIAL, [])
-    updates = tg("getUpdates", data={"offset": estado.get("offset", 0), "timeout": 0})
+    updates = leer_updates(estado)
 
     for u in updates:
         estado["offset"] = u["update_id"] + 1
@@ -520,6 +545,7 @@ def cmd_revisar():
 
     guardar_json(ESTADO, estado)
     guardar_json(HISTORIAL, historial)
+    confirmar_updates(updates)
 
 
 def cmd_verificar():
