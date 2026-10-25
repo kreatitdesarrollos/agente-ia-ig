@@ -196,6 +196,8 @@ def elegir_foto_propia(historial):
 
 def tg(metodo, **kwargs):
     r = requests.post("https://api.telegram.org/bot{}/{}".format(TG_TOKEN, metodo), timeout=60, **kwargs)
+    if not r.ok:
+        print("Telegram ({}) respondió: {}".format(metodo, r.text[:500]))
     r.raise_for_status()
     return r.json()["result"]
 
@@ -300,7 +302,10 @@ def cmd_revisar():
 
         if "callback_query" in u:
             cb = u["callback_query"]
-            tg("answerCallbackQuery", data={"callback_query_id": cb["id"]})
+            try:  # solo apaga el "cargando" del botón; Telegram lo rechaza si el clic tiene más de unos minutos
+                tg("answerCallbackQuery", data={"callback_query_id": cb["id"]})
+            except requests.exceptions.RequestException:
+                pass
             if str(cb["message"]["chat"]["id"]) != TG_CHAT:
                 continue
             accion, _, id_post = cb["data"].partition(":")
