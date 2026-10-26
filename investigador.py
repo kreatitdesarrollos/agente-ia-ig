@@ -74,12 +74,14 @@ Respondé SOLO con un JSON con estas claves:
 - "competencia": lista de lo que hicieron los competidores (vacía si no hay noticias de ellos)
 - "tendencias": lista de tendencias u oportunidades del rubro
 - "fechas": lista de fechas o eventos próximos que convenga aprovechar (vacía si no hay)
-- "ideas": exactamente 5 ideas de posts para Instagram, cada una {{"titulo": "...", "enfoque": "qué decir y con qué gancho, en 1-2 frases", "fuentes": [números]}}
+- "ideas": exactamente 5 ideas de posts para Instagram, cada una {{"titulo": "título corto, sin comandos", "enfoque": "qué decir y con qué gancho, en 1-2 frases", "fuentes": [números]}}
 
 Reglas: usá SOLO estas noticias; no inventes hechos, cifras ni fechas. Cada punto termina con las fuentes entre
 corchetes, ej. [3][7]. Las ideas tienen que conectar la noticia con los productos o servicios de la marca y servir
 para su público. Si no hay noticias útiles, decilo en el resumen y proponé ideas evergreen marcándolas como tales.
 Sin markdown.""".format(marca=cliente["marca"], nombre=cliente["nombre"], lista=lista or "(no se encontraron noticias)"))
+    for idea in datos.get("ideas", []):  # a veces copia los comandos "/nuevo x — " de la marca en el título
+        idea["titulo"] = re.sub(r"^\s*/nuevo\s+[^—–-]*[—–-]\s*", "", idea.get("titulo", "")).strip()
     datos["fuentes"] = fuentes
     hub("/api/agente/investigacion", json={"cliente_id": cliente_id, "datos": datos})
     print("Informe enviado:", len(fuentes), "noticias,", len(datos.get("ideas", [])), "ideas")
