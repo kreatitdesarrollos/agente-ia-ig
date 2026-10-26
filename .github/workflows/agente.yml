@@ -32,7 +32,7 @@ jobs:
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       IG_TOKEN: ${{ secrets.IG_TOKEN }}
       IG_USER_ID: ${{ secrets.IG_USER_ID }}
-      AUTO_PUBLICAR: ${{ vars.AUTO_PUBLICAR || 'false' }}
+      AUTO_PUBLICAR: ${{ vars.AUTO_PUBLICAR || secrets.AUTO_PUBLICAR || 'false' }}
       PORTERO_URL: ${{ vars.PORTERO_URL || 'https://kreatit-portero.federosciano.workers.dev' }}
       TG_UPDATE: ${{ inputs.update }}
     steps:
