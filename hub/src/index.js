@@ -17,6 +17,10 @@ import {
 } from "./comun.js";
 import { sincronizarPlaySiguiente, proponerResenas, vistaPreviaResena, ejecutarResena, guardarCuentaPlay, probarPlay } from "./play.js";
 import { nutricionPendiente, vistaPreviaEmail, ejecutarEmail, saltearEmail, otroEmail, paginaBaja } from "./nutricion.js";
+import {
+  guardarAds, probarAds, proponerCampana, vistaPreviaAnuncio, ejecutarAnuncio, cambiarEstadoCampana, sincronizarAdsSiguiente,
+  crearPublicoInstagram, actualizarPublicoLeads,
+} from "./anuncios.js";
 import { guardarInvestigacion, investigacionesSemanales, generarIdea } from "./investigacion.js";
 import {
   sincronizarSiguiente, proponerRespuestas, vistaPreviaRespuesta, ejecutarRespuesta, aprendizajes, informesSemanales, generarInforme,
@@ -203,6 +207,7 @@ async function enviarVistaPrevia(env, id) {
   if (p.tipo === "mensaje") return vistaPreviaMensaje(env, id);
   if (p.tipo === "resena") return vistaPreviaResena(env, id);
   if (p.tipo === "email") return vistaPreviaEmail(env, id);
+  if (p.tipo === "anuncio") return vistaPreviaAnuncio(env, id);
   const datos = JSON.parse(p.datos);
   const botones = { inline_keyboard: [[
     { text: "✅ Publicar", callback_data: "ok:" + id },
@@ -256,6 +261,16 @@ async function accionPropuesta(env, id, accion, cambios = null, chat = null) {
     if (p.estado === "pendiente") {
       await env.DB.prepare("UPDATE propuestas SET estado = 'descartada', actualizado = datetime('now') WHERE id = ?").bind(id).run();
     }
+    if (p.tipo === "anuncio") {
+      if (chat) await responder(env, chat, "🔄 Armando otra propuesta de campaña...");
+      try {
+        await proponerCampana(env, p.cliente_id, datos.idea || "");
+      } catch (e) {
+        if (chat) await responder(env, chat, "⚠️ " + e.message);
+        return { error: e.message };
+      }
+      return { ok: true, nota: "Llegó otra propuesta" };
+    }
     if (p.tipo === "email") { // el cron escribe otro email en unos minutos
       await otroEmail(env, datos);
       if (chat) await responder(env, chat, "🔄 En unos minutos te propongo otro email.");
@@ -285,7 +300,7 @@ async function accionPropuesta(env, id, accion, cambios = null, chat = null) {
 // Ejecuta una propuesta aprobada según su tipo.
 function ejecutar(env, id) {
   return env.DB.prepare("SELECT tipo FROM propuestas WHERE id = ?").bind(id).first()
-    .then((p) => ({ respuesta: ejecutarRespuesta, mensaje: ejecutarMensaje, resena: ejecutarResena, email: ejecutarEmail }[p?.tipo] || publicar)(env, id));
+    .then((p) => ({ respuesta: ejecutarRespuesta, mensaje: ejecutarMensaje, resena: ejecutarResena, email: ejecutarEmail, anuncio: ejecutarAnuncio }[p?.tipo] || publicar)(env, id));
 }
 
 // Publica una propuesta aprobada. Si Instagram todavía está procesando la imagen, queda "aprobada"
@@ -484,6 +499,7 @@ async function apiPanel(req, env, ctx, yo, ruta, url) {
       }
       c.ig_token = c.ig_token ? "(guardado)" : "";
       c.play_cuenta = c.play_cuenta ? "(guardada)" : "";
+      c.ads_token = c.ads_token ? "(guardado)" : "";
       return Response.json(c);
     }
     if (metodo === "PUT") {
@@ -518,6 +534,54 @@ async function apiPanel(req, env, ctx, yo, ruta, url) {
       return Response.json({ error: e.message }, { status: 400 });
     }
   }
+  const ads = ruta.match(/^clientes\/([\w-]+)\/ads(\/probar)?$/);
+  if (ads && metodo === "POST") {
+    if (!puede(yo, ads[1])) return SIN_PERMISO();
+    try {
+      if (ads[2]) return Response.json(await probarAds(env, ads[1]));
+      await guardarAds(env, ads[1], await cuerpo());
+      return Response.json({ ok: true });
+    } catch (e) {
+      return Response.json({ error: e.message }, { status: 400 });
+    }
+  }
+  if (ruta === "anuncios" && metodo === "GET") {
+    const cliente = url.searchParams.get("cliente");
+    if (!puede(yo, cliente)) return SIN_PERMISO();
+    const c = await env.DB.prepare("SELECT ads_cuenta, ads_token IS NOT NULL AS conectado, ads_tope_diario, ads_moneda, ads_link FROM clientes WHERE id = ?").bind(cliente).first();
+    const campanas = (await env.DB.prepare("SELECT * FROM campanas WHERE cliente_id = ? ORDER BY creado DESC").bind(cliente).all()).results;
+    const audiencias = (await env.DB.prepare("SELECT * FROM audiencias WHERE cliente_id = ?").bind(cliente).all()).results;
+    return Response.json({ config: c, campanas, audiencias });
+  }
+  if (ruta === "anuncios/proponer" && metodo === "POST") {
+    const b = await cuerpo();
+    if (!puede(yo, b.cliente)) return SIN_PERMISO();
+    try {
+      return Response.json(await proponerCampana(env, b.cliente, b.idea || ""));
+    } catch (e) {
+      return Response.json({ error: e.message }, { status: 400 });
+    }
+  }
+  const camp = ruta.match(/^campanas\/([\w-]+)\/(activar|pausar)$/);
+  if (camp && metodo === "POST") {
+    const k = await env.DB.prepare("SELECT cliente_id FROM campanas WHERE id = ?").bind(camp[1]).first();
+    if (!k || !puede(yo, k.cliente_id)) return SIN_PERMISO();
+    try {
+      return Response.json(await cambiarEstadoCampana(env, camp[1], camp[2] === "activar"));
+    } catch (e) {
+      return Response.json({ error: e.message }, { status: 400 });
+    }
+  }
+  const aud = ruta.match(/^audiencias\/([\w-]+)\/(instagram|leads)$/);
+  if (aud && metodo === "POST") {
+    if (!puede(yo, aud[1])) return SIN_PERMISO();
+    try {
+      return Response.json(aud[2] === "instagram" ? await crearPublicoInstagram(env, aud[1]) : await actualizarPublicoLeads(env, aud[1]));
+    } catch (e) {
+      return Response.json({ error: e.message }, { status: 400 });
+    }
+  }
+
   if (ruta === "resenas" && metodo === "GET") {
     const cliente = url.searchParams.get("cliente") || "";
     if (cliente ? !puede(yo, cliente) : !agencia) return SIN_PERMISO();
@@ -866,6 +930,7 @@ async function tareasProgramadas(env) {
   await sincronizarPlaySiguiente(env);
   await proponerResenas(env);
   await nutricionPendiente(env);
+  await sincronizarAdsSiguiente(env);
   await informesSemanales(env);
   await investigacionesSemanales(env);
 

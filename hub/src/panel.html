@@ -79,6 +79,7 @@
       <button data-vista="resultados">Resultados</button>
       <button data-vista="investigacion">Investigación</button>
       <button data-vista="leads">Leads</button>
+      <button data-vista="anuncios">Anuncios</button>
       <button data-vista="comentarios">Comentarios</button>
       <button data-vista="resenas">Reseñas</button>
       <button data-vista="clientes">Clientes</button>
@@ -149,7 +150,7 @@ document.querySelectorAll("nav button").forEach((b) => (b.onclick = () => ir(b.d
 function ir(vista) {
   document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("activo", b.dataset.vista === vista));
   try { localStorage.setItem("vista", vista); } catch {}
-  ({ propuestas: () => verPropuestas("pendiente"), historial: () => verPropuestas("todas"), generar: verGenerar, resultados: verResultados, investigacion: verInvestigacion, comentarios: verComentarios, resenas: verResenas, leads: verLeads, clientes: verClientes, actividad: verActividad })[vista]();
+  ({ propuestas: () => verPropuestas("pendiente"), historial: () => verPropuestas("todas"), generar: verGenerar, resultados: verResultados, investigacion: verInvestigacion, comentarios: verComentarios, resenas: verResenas, leads: verLeads, anuncios: verAnuncios, clientes: verClientes, actividad: verActividad })[vista]();
 }
 
 async function iniciar() {
@@ -191,6 +192,7 @@ function tarjetaPropuesta(p, recargar) {
   if (p.tipo === "mensaje") return tarjetaMensaje(p, recargar);
   if (p.tipo === "resena") return tarjetaResena(p, recargar);
   if (p.tipo === "email") return tarjetaEmail(p, recargar);
+  if (p.tipo === "anuncio") return tarjetaAnuncio(p, recargar);
   const el = document.createElement("div");
   el.className = "tarjeta prop";
   const editable = p.estado === "pendiente" || p.estado === "error";
@@ -322,6 +324,78 @@ function tarjetaEmail(p, recargar) {
   })));
   $("[data-lead]", el).onclick = () => verLead(d.contacto_id);
   return el;
+}
+
+function tarjetaAnuncio(p, recargar) {
+  const d = p.datos;
+  const el = document.createElement("div");
+  el.className = "tarjeta prop";
+  el.innerHTML = `
+    <div class="meta"><span class="chip ${esc(p.estado)}">${esc(p.estado)}</span> ${esc(p.cliente_nombre)} · campaña propuesta</div>
+    <h2>📣 ${esc(d.nombre)}</h2>
+    <p class="meta">Post: "${esc(d.post)}"</p>
+    <table><tbody>
+      <tr><td>Objetivo</td><td>${d.objetivo === "trafico" ? "Tráfico a " + esc(d.link) : "Interacción con el post"}</td></tr>
+      <tr><td>Público</td><td>${esc(d.publico)}, ${esc(d.edad_min)}–${esc(d.edad_max)} años, Argentina</td></tr>
+      <tr><td>Presupuesto</td><td><b>${esc(d.presupuesto_diario)} ${esc(d.moneda || "")}/día × ${esc(d.dias)} días</b> (máximo ${d.presupuesto_diario * d.dias} ${esc(d.moneda || "")})</td></tr>
+    </tbody></table>
+    <p><b>Por qué:</b> ${esc(d.motivo)}</p><p><b>Qué esperar:</b> ${esc(d.esperado)}</p>
+    ${p.resultado.error ? `<p class="error">${esc(p.resultado.error)}</p>` : ""}
+    <div class="fila" style="margin-top:12px">${
+      p.estado === "pendiente" ? `<button class="b prim" data-a="aprobar">✅ Crear en pausa</button><button class="b" data-a="otra">🔄 Otra</button><button class="b peligro" data-a="descartar">Descartar</button>` :
+      p.estado === "error" ? `<button class="b peligro" data-a="descartar">Descartar</button>` : ""}</div>
+    <p class="meta" style="color:var(--suave)">Al aprobar se crea en pausa: no gasta hasta que la actives en Anuncios.</p>`;
+  el.querySelectorAll("[data-a]").forEach((b) => (b.onclick = () => conBoton(b, async () => {
+    const r = await api(`propuestas/${p.id}/${b.dataset.a}`, { method: "POST", body: {} });
+    aviso(r.error || r.nota || "Listo");
+    recargar();
+  })));
+  return el;
+}
+
+async function verAnuncios() {
+  const v = $("#vista");
+  v.innerHTML = `<div class="fila" style="margin-bottom:16px">
+      <select id="aCliente" style="max-width:260px" ${yo.rol === "agencia" ? "" : "hidden"}>${opcionesClientes(yo.cliente_id || clientes[0]?.id)}</select></div>
+    <div id="aCuerpo"></div>`;
+  const cli = () => $("#aCliente").value;
+  $("#aCliente").onchange = () => cargar();
+  async function cargar() {
+    const { config, campanas, audiencias } = await api("anuncios?cliente=" + encodeURIComponent(cli()));
+    if (!config?.conectado) {
+      $("#aCuerpo").innerHTML = '<div class="tarjeta vacio">Este cliente todavía no tiene la cuenta publicitaria conectada. Cargala en Clientes → Editar → Anuncios de Meta.</div>';
+      return;
+    }
+    const tiene = (t) => audiencias.some((a) => a.tipo === t);
+    $("#aCuerpo").innerHTML = `
+      <div class="tarjeta"><h2>Nueva campaña</h2>
+        <p class="meta" style="color:var(--suave)">La IA elige el post que mejor funcionó, el público y el presupuesto (nunca más de ${esc(config.ads_tope_diario)} ${esc(config.ads_moneda || "")}/día).</p>
+        <div class="fila"><input id="aIdea" placeholder="Objetivo o idea (opcional): ej. más descargas de la app" style="flex:1"><button class="b prim" id="aProponer">Proponer campaña</button></div></div>
+      <div class="tarjeta"><h2>Campañas</h2>${campanas.length ? `<div style="overflow-x:auto"><table><thead><tr><th>Campaña</th><th>Estado</th><th>Presupuesto</th><th>Gasto</th><th>Alcance</th><th>Clics</th><th>Resultados</th><th></th></tr></thead><tbody>${
+        campanas.map((k) => `<tr><td><b>${esc(k.nombre)}</b><br><span class="meta">${esc(k.objetivo)} · hasta ${esc((k.fin || "").slice(0, 10))}</span></td>
+          <td><span class="chip ${k.estado === "ACTIVE" ? "publicada" : ""}">${esc(k.estado)}</span></td><td>${esc(k.presupuesto_diario)}/día</td>
+          <td>${k.gasto ?? "…"}</td><td>${k.alcance ?? "…"}</td><td>${k.clics ?? "…"}</td><td class="meta">${esc(k.resultados || "")}</td>
+          <td>${k.estado === "ACTIVE" ? `<button class="b" data-c="${esc(k.id)}/pausar">Pausar</button>` : `<button class="b prim" data-c="${esc(k.id)}/activar">Activar</button>`}</td></tr>`).join("")
+      }</tbody></table></div><p class="meta" style="color:var(--suave)">Los resultados se actualizan solos cada 3 horas.</p>` : '<p class="vacio">Todavía no hay campañas.</p>'}</div>
+      <div class="tarjeta"><h2>Públicos para retargeting</h2>
+        <p>${tiene("interactuaron") ? "✅" : "—"} Gente que interactuó con el Instagram (últimos 365 días) ${tiene("interactuaron") ? "" : '<button class="b" id="aPubIg">Crear</button>'}</p>
+        <p>${tiene("leads") ? "✅" : "—"} Leads con email <button class="b" id="aPubLeads">${tiene("leads") ? "Actualizar" : "Crear"}</button></p>
+        <p class="meta" style="color:var(--suave)">Meta tarda unas horas en armar los públicos. Las campañas propuestas los pueden usar para volver a impactar a quienes ya te conocen.</p></div>`;
+    $("#aProponer").onclick = () => conBoton($("#aProponer"), async () => {
+      await api("anuncios/proponer", { method: "POST", body: { cliente: cli(), idea: $("#aIdea").value } });
+      aviso("Propuesta lista: está en 'Para aprobar' y en Telegram");
+    });
+    $("#aCuerpo").querySelectorAll("[data-c]").forEach((b) => (b.onclick = () => conBoton(b, async () => {
+      const [id, accion] = b.dataset.c.split("/");
+      if (accion === "activar" && !confirm("Al activarla la campaña empieza a gastar. ¿Seguro?")) return;
+      await api(`campanas/${id}/${accion}`, { method: "POST", body: {} });
+      aviso(accion === "activar" ? "Campaña activada" : "Campaña pausada");
+      cargar();
+    })));
+    if ($("#aPubIg")) $("#aPubIg").onclick = () => conBoton($("#aPubIg"), async () => { await api(`audiencias/${cli()}/instagram`, { method: "POST", body: {} }); aviso("Público creado"); cargar(); });
+    $("#aPubLeads").onclick = () => conBoton($("#aPubLeads"), async () => { const r = await api(`audiencias/${cli()}/leads`, { method: "POST", body: {} }); aviso(r.nota || "Público actualizado"); cargar(); });
+  }
+  await cargar();
 }
 
 async function verResenas() {
@@ -582,6 +656,16 @@ async function editarCliente(id) {
     <input id="cPlayArchivo" type="file" accept=".json,application/json">
     <p class="fila"><button class="b prim" id="cPlayGuardar">Guardar Google Play</button><button class="b" id="cPlayProbar">Probar conexión</button></p>
     <p class="meta" id="cPlayEstado" style="color:var(--suave)"></p></div>
+  <div class="tarjeta"><h2>Anuncios de Meta</h2>
+    <div class="grilla">
+      <div><label>ID de la cuenta publicitaria</label><input id="aCuenta" value="${esc(c.ads_cuenta || "")}" placeholder="act_1234567890"></div>
+      <div><label>ID de la página de Facebook</label><input id="aPagina" value="${esc(c.ads_pagina || "")}"></div>
+      <div><label>Tope de presupuesto diario (${esc(c.ads_moneda || "moneda de la cuenta")})</label><input id="aTope" type="number" min="0" value="${esc(c.ads_tope_diario || 0)}"></div>
+      <div><label>Link de destino por defecto</label><input id="aLink" value="${esc(c.ads_link || "")}" placeholder="https://..."></div>
+      <div><label>Token de acceso ${c.ads_token ? "(ya hay uno guardado; pegá otro solo para reemplazarlo)" : "(usuario del sistema del Business Manager)"}</label><input id="aToken" type="password" autocomplete="off"></div>
+    </div>
+    <p class="fila"><button class="b prim" id="aGuardar">Guardar anuncios</button><button class="b" id="aProbar">Probar conexión</button></p>
+    <p class="meta" id="aEstado" style="color:var(--suave)"></p></div>
   <div class="tarjeta"><h2>Nutrición por email</h2>
     <p class="meta" style="color:var(--suave)">Los leads con email reciben esta secuencia hasta que pasan a "cliente" o "perdido", o se dan de baja. Se envía con Brevo desde el dominio del cliente (tiene que estar verificado en Brevo).</p>
     <div class="grilla">
@@ -629,6 +713,15 @@ async function editarCliente(id) {
     }) } });
     aviso("Nutrición guardada");
     dibujarPasos();
+  });
+  $("#aGuardar").onclick = () => conBoton($("#aGuardar"), async () => {
+    await api(`clientes/${id}/ads`, { method: "POST", body: { cuenta: $("#aCuenta").value.trim(), pagina: $("#aPagina").value.trim(), tope: Number($("#aTope").value), link: $("#aLink").value.trim(), token: $("#aToken").value || undefined } });
+    $("#aToken").value = "";
+    aviso("Anuncios guardados");
+  });
+  $("#aProbar").onclick = () => conBoton($("#aProbar"), async () => {
+    const r = await api(`clientes/${id}/ads/probar`, { method: "POST", body: {} });
+    $("#aEstado").textContent = r.error || `✅ ${r.cuenta} (${r.moneda}, ${r.estado})${r.pagina ? " · página: " + r.pagina : " · ⚠️ falta la página"}`;
   });
   $("#cPlayGuardar").onclick = () => conBoton($("#cPlayGuardar"), async () => {
     const apps = $("#cPlayApps").value.split("\n").map((x) => x.trim()).filter(Boolean);
