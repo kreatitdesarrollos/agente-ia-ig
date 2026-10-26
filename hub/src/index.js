@@ -13,8 +13,9 @@
 import PANEL from "./panel.html";
 import {
   IG_API, tg, responder, destinatarios, notificar, avisarAgencia, registrar, igGet, igPost, esperar, hex,
-  base64ABytes, claveAgente, cifrar, descifrar, horaLocal, textoFinal,
+  base64ABytes, claveAgente, cifrar, descifrar, horaLocal, textoFinal, despacharWorkflow,
 } from "./comun.js";
+import { guardarInvestigacion, investigacionesSemanales, generarIdea } from "./investigacion.js";
 import {
   sincronizarSiguiente, proponerRespuestas, vistaPreviaRespuesta, ejecutarRespuesta, aprendizajes, informesSemanales, generarInforme,
 } from "./instagram.js";
@@ -102,7 +103,14 @@ async function webhookTelegram(req, env, ctx) {
 
   if (u.callback_query) {
     const cb = u.callback_query;
-    const [accion, id] = cb.data.split(":");
+    const [accion, id, extra] = cb.data.split(":");
+    if (accion === "idea") {
+      const inf = await env.DB.prepare("SELECT cliente_id FROM informes WHERE id = ?").bind(id).first();
+      const ok = inf && puede(yo, inf.cliente_id);
+      await tg(env, "answerCallbackQuery", { callback_query_id: cb.id, text: ok ? "✨ Generando el post..." : "No tenés acceso" });
+      if (ok) ctx.waitUntil(generarIdea(env, id, Number(extra), chat));
+      return new Response("ok");
+    }
     const p = await env.DB.prepare("SELECT cliente_id FROM propuestas WHERE id = ?").bind(id).first();
     if (!p || !puede(yo, p.cliente_id)) {
       await tg(env, "answerCallbackQuery", { callback_query_id: cb.id, text: "No tenés acceso a este post" });
@@ -356,6 +364,16 @@ async function apiAgente(req, env, ctx, ruta, url) {
     return Response.json({ ok: true, id });
   }
 
+  if (ruta === "investigacion" && req.method === "GET") {
+    const c = await env.DB.prepare("SELECT id, nombre, marca, investigacion FROM clientes WHERE id = ?").bind(url.searchParams.get("cliente")).first();
+    if (!c) return Response.json({ error: "no existe el cliente" }, { status: 404 });
+    return Response.json({ cliente: { id: c.id, nombre: c.nombre, marca: c.marca }, config: JSON.parse(c.investigacion || "{}") });
+  }
+  if (ruta === "investigacion" && req.method === "POST") {
+    const b = await req.json();
+    return Response.json(await guardarInvestigacion(env, b.cliente_id, b.datos));
+  }
+
   if (ruta === "aviso" && req.method === "POST") {
     const b = await req.json();
     await avisarAgencia(env, String(b.texto).slice(0, 4000));
@@ -600,6 +618,35 @@ async function apiPanel(req, env, ctx, yo, ruta, url) {
     const c = await env.DB.prepare("SELECT * FROM clientes WHERE id = ?").bind(b.cliente).first();
     return Response.json({ ok: true, texto: await generarInforme(env, c) });
   }
+  if (ruta === "investigacion" && metodo === "GET") {
+    const cliente = url.searchParams.get("cliente");
+    if (!puede(yo, cliente)) return SIN_PERMISO();
+    const c = await env.DB.prepare("SELECT investigacion FROM clientes WHERE id = ?").bind(cliente).first();
+    const { results } = await env.DB.prepare("SELECT id, creado, texto, datos FROM informes WHERE cliente_id = ? AND tipo = 'mercado' ORDER BY id DESC LIMIT 8").bind(cliente).all();
+    return Response.json({ config: JSON.parse(c?.investigacion || "{}"), informes: results.map((i) => ({ ...i, datos: JSON.parse(i.datos || "{}") })) });
+  }
+  if (ruta === "investigacion" && metodo === "PUT") {
+    const b = await cuerpo();
+    if (!puede(yo, b.cliente)) return SIN_PERMISO();
+    const limpiar = (l) => (l || []).map((x) => String(x).trim()).filter(Boolean).slice(0, 6);
+    await env.DB.prepare("UPDATE clientes SET investigacion = ? WHERE id = ?")
+      .bind(JSON.stringify({ temas: limpiar(b.temas), competidores: limpiar(b.competidores) }), b.cliente).run();
+    return Response.json({ ok: true });
+  }
+  if (ruta === "investigacion/ahora" && metodo === "POST") {
+    const b = await cuerpo();
+    if (!puede(yo, b.cliente)) return SIN_PERMISO();
+    await despacharWorkflow(env, "investigar.yml", { cliente: b.cliente });
+    return Response.json({ ok: true });
+  }
+  const ide = ruta.match(/^investigacion\/(\d+)\/idea\/(\d+)$/);
+  if (ide && metodo === "POST") {
+    const inf = await env.DB.prepare("SELECT cliente_id FROM informes WHERE id = ?").bind(ide[1]).first();
+    if (!inf || !puede(yo, inf.cliente_id)) return SIN_PERMISO();
+    await generarIdea(env, ide[1], Number(ide[2]), null);
+    return Response.json({ ok: true });
+  }
+
   if (ruta === "comentarios" && metodo === "GET") {
     const cliente = url.searchParams.get("cliente") || "";
     if (cliente ? !puede(yo, cliente) : !agencia) return SIN_PERMISO();
@@ -774,22 +821,14 @@ async function tareasProgramadas(env) {
   await proponerRespuestas(env);
   await proponerPendientesMensajes(env);
   await informesSemanales(env);
+  await investigacionesSemanales(env);
 
   await env.DB.prepare("DELETE FROM sesiones WHERE vence < datetime('now')").run();
 }
 
 // ---------------------------------------------------------------- GitHub (generador)
 
-async function despacharGenerar(env, cliente, pedido, producto) {
-  const r = await fetch(`https://api.github.com/repos/${env.REPO}/actions/workflows/generar.yml/dispatches`, {
-    method: "POST",
-    headers: { Authorization: "Bearer " + env.GH_TOKEN, Accept: "application/vnd.github+json", "User-Agent": "kreatit-hub" },
-    body: JSON.stringify({ ref: "main", inputs: { cliente, pedido, producto } }),
-  });
-  if (!r.ok) {
-    const error = `GitHub no aceptó la generación (${r.status}): ${(await r.text()).slice(0, 300)}`;
-    await registrar(env, cliente, "error", error);
-    await avisarAgencia(env, "⚠️ " + error);
-  }
+function despacharGenerar(env, cliente, pedido, producto) {
+  return despacharWorkflow(env, "generar.yml", { cliente, pedido, producto });
 }
 

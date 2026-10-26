@@ -107,6 +107,20 @@ export async function descifrar(env, guardado) {
   return new TextDecoder().decode(datos);
 }
 
+// Dispara un workflow de GitHub Actions (generar.yml, investigar.yml...).
+export async function despacharWorkflow(env, archivo, inputs) {
+  const r = await fetch(`https://api.github.com/repos/${env.REPO}/actions/workflows/${archivo}/dispatches`, {
+    method: "POST",
+    headers: { Authorization: "Bearer " + env.GH_TOKEN, Accept: "application/vnd.github+json", "User-Agent": "kreatit-hub" },
+    body: JSON.stringify({ ref: "main", inputs }),
+  });
+  if (!r.ok) {
+    const error = `GitHub no aceptó ${archivo} (${r.status}): ${(await r.text()).slice(0, 300)}`;
+    await registrar(env, inputs.cliente || null, "error", error);
+    await avisarAgencia(env, "⚠️ " + error);
+  }
+}
+
 // Gemini (capa gratis) con modelos de respaldo: si uno está saturado o no existe, prueba el siguiente.
 // Devuelve el JSON que pide el prompt, o tira error si ninguno respondió.
 const MODELOS_GEMINI = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-lite-latest"];
