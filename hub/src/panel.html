@@ -84,6 +84,7 @@
       <button data-vista="resenas">Reseñas</button>
       <button data-vista="clientes">Clientes</button>
       <button data-vista="actividad">Actividad</button>
+      <button data-vista="ayuda">Ayuda</button>
     </nav>
     <span style="flex:1"></span>
     <span id="quien" style="color:var(--suave);font-size:13px"></span>
@@ -150,7 +151,7 @@ document.querySelectorAll("nav button").forEach((b) => (b.onclick = () => ir(b.d
 function ir(vista) {
   document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("activo", b.dataset.vista === vista));
   try { localStorage.setItem("vista", vista); } catch {}
-  ({ propuestas: () => verPropuestas("pendiente"), historial: () => verPropuestas("todas"), generar: verGenerar, resultados: verResultados, investigacion: verInvestigacion, comentarios: verComentarios, resenas: verResenas, leads: verLeads, anuncios: verAnuncios, clientes: verClientes, actividad: verActividad })[vista]();
+  ({ propuestas: () => verPropuestas("pendiente"), historial: () => verPropuestas("todas"), generar: verGenerar, resultados: verResultados, investigacion: verInvestigacion, comentarios: verComentarios, resenas: verResenas, leads: verLeads, anuncios: verAnuncios, ayuda: verAyuda, clientes: verClientes, actividad: verActividad })[vista]();
 }
 
 async function iniciar() {
@@ -640,8 +641,11 @@ async function editarCliente(id) {
     </div></details>
     <h3>Marca (quién es, qué vende, tono, productos, cómo escribir)</h3>
     <textarea id="cMarca" class="grande">${esc(c.marca)}</textarea>
-    <h3>Calendario semanal (JSON)</h3>
-    <textarea id="cCal" class="grande" style="min-height:220px">${esc(JSON.stringify(JSON.parse(c.calendario || "{}"), null, 2))}</textarea>
+    <h3>Calendario semanal</h3>
+    <p class="meta" style="color:var(--suave)">De qué se habla cada día en el post automático. Si nombrás productos (separados por coma), usa sus fotos y va rotando entre ellos.</p>
+    <div id="cDias"></div>
+    <details><summary style="cursor:pointer;color:var(--suave);font-size:13px">Avanzado: editar el calendario como JSON</summary>
+    <textarea id="cCal" class="grande" style="min-height:220px">${esc(JSON.stringify(JSON.parse(c.calendario || "{}"), null, 2))}</textarea></details>
     <p><button class="b prim" id="cGuardar">Guardar</button></p>
   </div>
   <div class="tarjeta"><h2>Fotos y capturas por producto</h2>
@@ -741,9 +745,32 @@ async function editarCliente(id) {
     await api(`clientes/${id}/suscribir`, { method: "POST", body: {} });
     aviso("Mensajes directos activados");
   });
+  const DIAS = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"];
+  const NOMBRES = { miercoles: "miércoles", sabado: "sábado" };
+  const calOriginal = JSON.parse(c.calendario || "{}");
+  $("#cDias").innerHTML = DIAS.map((d) => {
+    const v = calOriginal[d] || {};
+    return `<div class="tarjeta" style="padding:10px;margin-bottom:8px"><b style="text-transform:capitalize">${NOMBRES[d] || d}</b>
+      <textarea data-dia="${d}" style="min-height:52px;margin-top:6px" placeholder="Tema del día (vacío = post libre sobre la marca)">${esc(v.tipo || "")}</textarea>
+      <div class="fila" style="margin-top:6px"><input data-prod="${d}" value="${esc((v.productos || []).join(", "))}" placeholder="productos (opcional)" style="flex:1;min-width:180px">
+      <label style="margin:0;display:flex;gap:6px;align-items:center"><input type="checkbox" data-foto="${d}" ${v.foto_propia ? "checked" : ""} style="width:auto"> usar una foto propia</label></div></div>`;
+  }).join("");
+  const calDelEditor = () => {
+    const cal = {};
+    for (const d of DIAS) {
+      const tipo = $(`[data-dia="${d}"]`).value.trim();
+      const productos = $(`[data-prod="${d}"]`).value.split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
+      if (!tipo && !productos.length && !$(`[data-foto="${d}"]`).checked) continue;
+      cal[d] = { tipo: tipo || "Post libre sobre la marca" };
+      if (productos.length) cal[d].productos = productos;
+      if ($(`[data-foto="${d}"]`).checked) cal[d].foto_propia = true;
+    }
+    return cal;
+  };
   $("#cGuardar").onclick = () => conBoton($("#cGuardar"), async () => {
     let cal;
-    try { cal = JSON.stringify(JSON.parse($("#cCal").value)); } catch { throw new Error("El calendario no es JSON válido"); }
+    const avanzado = $("#cCal").closest("details").open;
+    try { cal = JSON.stringify(avanzado ? JSON.parse($("#cCal").value) : calDelEditor()); } catch { throw new Error("El calendario no es JSON válido"); }
     await api("clientes/" + id, { method: "PUT", body: {
       nombre: $("#cNombre").value, hora_post: $("#cHora").value, zona: $("#cZona").value,
       auto_publicar: Number($("#cAuto").value), auto_mensajes: Number($("#cAutoMsg").value), activo: Number($("#cActivo").value), ig_user_id: $("#cIgUser").value || null,
@@ -808,6 +835,68 @@ async function verEquipo(el, cliente) {
     aviso("Listo: copiá el link de invitación y pasáselo");
     verEquipo(el, cliente);
   });
+}
+
+// ---------- ayuda (guía para clientes)
+function verAyuda() {
+  const s = (titulo, html, abierta = false) => `<details class="tarjeta" ${abierta ? "open" : ""}><summary style="cursor:pointer;font-weight:600;font-size:16px">${titulo}</summary><div style="margin-top:10px">${html}</div></details>`;
+  $("#vista").innerHTML = `<div style="max-width:860px">
+  <div class="tarjeta"><h2>Cómo usar tu panel</h2>
+    <p>Este panel maneja tus redes con inteligencia artificial: escribe y diseña tus posts, responde comentarios, mensajes y reseñas, sigue a tus contactos y te muestra qué funciona. <b>Nada sale sin tu aprobación</b> (salvo lo que vos elijas automatizar).</p>
+    <p>Todo lo que necesite tu OK te llega a <b>Telegram</b> con botones, y también aparece acá en <b>Para aprobar</b>. Usá lo que te quede más cómodo.</p></div>
+
+  ${s("1. Primeros pasos (una sola vez)", `<ol>
+    <li><b>Vinculá tu Telegram:</b> abrí el link de invitación que te mandamos y tocá <i>Iniciar</i>. Si no tenés Telegram, bajalo gratis.</li>
+    <li><b>Entrá al panel:</b> escribí tu usuario, tocá <i>Enviarme el código</i> y poné el código que te llega a Telegram. La sesión dura 30 días.</li>
+    <li><b>Conectá tu Instagram:</b> en <i>Mi cuenta</i> → <i>Conectar Instagram</i>, entrá con tu cuenta y aceptá los permisos. Tiene que ser una cuenta <b>profesional</b> (empresa o creador). Si aparece "Rol de desarrollador insuficiente", avisanos: tenemos que habilitar tu cuenta.</li>
+    <li><b>Contanos tu marca</b> y cargá tus fotos (ver los puntos 2 y 3).</li></ol>`, true)}
+
+  ${s("2. Tu marca y tu calendario", `<p>En <i>Mi cuenta</i> → <b>Marca</b> escribí, con tus palabras, lo que la IA tiene que saber. Cuanto más concreto, mejores posts:</p>
+    <ul><li>Quién sos y qué vendés (productos o servicios, con sus datos reales: precios si querés que se mencionen, horarios, zonas, links).</li>
+    <li>A quién le hablás y cómo (tono: cercano, formal, con humor…).</li>
+    <li>Qué querés que haga la gente: escribirte, comprar, reservar, descargar…</li>
+    <li>Lo que <b>no</b> hay que decir nunca.</li></ul>
+    <p>En el <b>Calendario semanal</b> elegís de qué se habla cada día en el post automático (por ejemplo: lunes un consejo, miércoles un producto, viernes una promo). Si nombrás un producto, usa sus fotos. Marcá <i>usar una foto propia</i> los días que quieras fotos reales tuyas.</p>
+    <p>También elegís la <b>hora</b> del post diario y si los posts se aprueban o <b>se publican solos</b>.</p>`)}
+
+  ${s("3. Fotos y productos", `<p>En <i>Mi cuenta</i> → <b>Fotos y capturas por producto</b>: escribí el nombre del producto (corto, ej. <code>tortas</code>) y subí sus fotos. Cuando pidas un post de ese producto, la IA usa esas fotos reales y arma la pieza.</p>
+    <p>Las fotos sin producto son tus <b>fotos propias</b> (local, equipo, clientes): se usan los días marcados en el calendario, una vez cada una.</p>`)}
+
+  ${s("4. Aprobar lo que propone la IA", `<p>Te llega a Telegram (y a <i>Para aprobar</i>) con tres botones:</p>
+    <ul><li><b>✅ Publicar / Responder / Enviar</b>: sale en el momento.</li>
+    <li><b>🔄 Otra</b>: te propone otra versión.</li>
+    <li><b>❌ Descartar / Ignorar</b>: no se hace nada.</li></ul>
+    <p>¿Querés cambiar el texto? En Telegram <b>respondé al mensaje</b> con el texto nuevo; en el panel editalo antes de aprobar.</p>`)}
+
+  ${s("5. Pedir un post cuando quieras", `<p>En Telegram escribí <code>/nuevo</code> seguido del tema, por ejemplo <code>/nuevo promo de verano</code> o el nombre de un producto. También desde <i>Generar</i> en el panel. En 1 o 2 minutos te llega para aprobar.</p>`)}
+
+  ${s("6. Comentarios, mensajes directos y reseñas", `<ul>
+    <li><b>Comentarios de Instagram:</b> la IA los clasifica (pregunta, elogio, queja, compra, spam) y te propone la respuesta. El spam lo propone ocultar.</li>
+    <li><b>Mensajes directos:</b> cada persona que te escribe queda como contacto. La IA propone la respuesta para llevarla a comprar. Si respondés vos desde la app de Instagram, la propuesta se cancela sola. Podés activar <i>Responder solos</i> en Mi cuenta (las quejas igual te las pregunta).</li>
+    <li><b>Reseñas de Google Play</b> (si tenés una app): propone la respuesta a cada reseña.</li>
+    <li>Lo urgente (quejas, 1–2 estrellas) llega marcado con 🔴.</li></ul>`)}
+
+  ${s("7. Leads (tus contactos)", `<p>En <b>Leads</b> ves a todos los que te escribieron o completaron tu formulario: qué buscan, cuánto interés muestran y la conversación completa. Mové cada uno de etapa (<i>nuevo → conversando → interesado → cliente</i> o <i>perdido</i>) y anotá lo que quieras.</p>
+    <p><b>Formulario web:</b> en Mi cuenta está el código para pegar en tu página; los datos caen acá y te avisa por Telegram.</p>
+    <p><b>Emails de seguimiento:</b> si está activado, los contactos con email reciben una secuencia de emails personalizados hasta que pasan a cliente, se pierden o se dan de baja.</p>`)}
+
+  ${s("8. Resultados, informes e investigación", `<ul>
+    <li><b>Resultados:</b> cuánta gente vio cada post (<i>alcance</i> = personas distintas; <i>visualizaciones</i> = veces que se mostró), interacciones y guardados. La IA usa estos números para escribir mejor.</li>
+    <li><b>Informe semanal:</b> los lunes te llega un resumen con 3 recomendaciones.</li>
+    <li><b>Investigación:</b> los miércoles busca noticias reales de tu rubro y tu competencia, y te propone 5 ideas de posts. Tocá una idea para generar el post. Cargá tus temas y competidores en esa pestaña.</li></ul>`)}
+
+  ${s("9. Anuncios", `<p>En <b>Anuncios</b> → <i>Proponer campaña</i>: la IA elige tu post que mejor funcionó, el público y el presupuesto (nunca más que tu tope diario). Al aprobar se crea <b>en pausa</b>: <b>no gasta nada</b> hasta que toques <i>Activar</i>. Toda campaña tiene fecha de fin y la podés pausar cuando quieras.</p>
+    <p>Los <b>públicos de retargeting</b> sirven para volver a mostrarle anuncios a quien ya interactuó con tu Instagram o ya es tu contacto.</p>`)}
+
+  ${s("10. Tu equipo", `<p>En Mi cuenta → <b>Equipo</b> → <i>Invitar</i>: poné su nombre y un usuario (por ejemplo su email), copiá el link de invitación y mandáselo. Elegí quién recibe los posts para aprobar en Telegram. Con <i>Quitar</i> le sacás el acceso.</p>`)}
+
+  ${s("Preguntas frecuentes", `<ul>
+    <li><b>Toqué Publicar y no pasó nada:</b> fijate en Telegram si llegó un aviso de error; si dice que la imagen todavía se procesa, se publica sola en unos minutos.</li>
+    <li><b>No me llega el código:</b> revisá que estés usando tu usuario exacto y que hayas abierto la invitación en Telegram. Si cambiaste de Telegram, pedí una invitación nueva.</li>
+    <li><b>No llegan los mensajes directos:</b> en la app de Instagram, Configuración → Mensajes → Herramientas conectadas → permitir acceso a los mensajes; y avisanos.</li>
+    <li><b>La IA dijo algo incorrecto:</b> corregí el texto antes de aprobar y sumá el dato correcto en tu <i>Marca</i> para que no se repita.</li>
+    <li><b>¿Cuánto cuesta lo que gasta en anuncios?</b> Solo lo que vos actives, dentro del tope diario que fijaste; Meta te lo cobra directo en tu cuenta publicitaria.</li></ul>`)}
+  </div>`;
 }
 
 // ---------- actividad
