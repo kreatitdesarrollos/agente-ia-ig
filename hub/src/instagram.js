@@ -52,15 +52,15 @@ async function sincronizar(env, c) {
     let v = {};
     try {
       const { data: metricas } = await igGet(`${IG_API}/${media_id}/insights`, {
-        metric: "reach,saved,shares,total_interactions", access_token: token,
+        metric: "reach,views,saved,shares,total_interactions", access_token: token,
       });
       v = Object.fromEntries(metricas.map((d) => [d.name, d.values?.[0]?.value ?? d.total_value?.value ?? 0]));
     } catch (e) {
       console.log("métricas", media_id, e.message);
     }
     await env.DB.prepare(
-      "UPDATE publicaciones_ig SET alcance = ?, guardados = ?, compartidos = ?, interacciones = ?, metricas_actualizadas = datetime('now') WHERE media_id = ?"
-    ).bind(v.reach ?? null, v.saved ?? null, v.shares ?? null, v.total_interactions ?? null, media_id).run();
+      "UPDATE publicaciones_ig SET alcance = ?, visualizaciones = ?, guardados = ?, compartidos = ?, interacciones = ?, metricas_actualizadas = datetime('now') WHERE media_id = ?"
+    ).bind(v.reach ?? null, v.views ?? null, v.saved ?? null, v.shares ?? null, v.total_interactions ?? null, media_id).run();
   }
 
   // comentarios nuevos: posts con más comentarios que los ya vistos (hasta 4 posts por pasada).
@@ -247,8 +247,8 @@ export async function generarInforme(env, c) {
 
 ---
 Sos el analista de redes de ${c.nombre}. Estos son los posts de Instagram de los últimos 30 días con sus números
-(alcance = cuentas que lo vieron; interacciones = me gusta + comentarios + guardados + compartidos):
-${mes.map((p) => `- ${p.fecha?.slice(0, 10)} | alcance ${p.alcance ?? "?"} | interacciones ${p.interacciones ?? "?"} | guardados ${p.guardados ?? "?"} | "${titulo(p)}"`).join("\n") || "(todavía no hay posts con métricas)"}
+(alcance = cuentas distintas que lo vieron; visualizaciones = veces que se mostró en total; interacciones = me gusta + comentarios + guardados + compartidos):
+${mes.map((p) => `- ${p.fecha?.slice(0, 10)} | alcance ${p.alcance ?? "?"} | visualizaciones ${p.visualizaciones ?? "?"} | interacciones ${p.interacciones ?? "?"} | guardados ${p.guardados ?? "?"} | "${titulo(p)}"`).join("\n") || "(todavía no hay posts con métricas)"}
 
 Respondé SOLO con un JSON: {"recomendaciones": ["...", "...", "..."]}
 Tres recomendaciones concretas y accionables para la semana que viene (qué temas, ganchos o formatos repetir o evitar),

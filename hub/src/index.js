@@ -18,8 +18,12 @@ import {
 import {
   sincronizarSiguiente, proponerRespuestas, vistaPreviaRespuesta, ejecutarRespuesta, aprendizajes, informesSemanales, generarInforme,
 } from "./instagram.js";
+import {
+  webhookInstagram, leadWeb, proponerPendientesMensajes, vistaPreviaMensaje, ejecutarMensaje, enviarMensajeIG,
+} from "./mensajes.js";
 
-const IG_PERMISOS = "instagram_business_basic,instagram_business_content_publish,instagram_business_manage_comments,instagram_business_manage_insights";
+const IG_PERMISOS = "instagram_business_basic,instagram_business_content_publish,instagram_business_manage_comments," +
+  "instagram_business_manage_insights,instagram_business_manage_messages";
 
 export default {
   async fetch(req, env, ctx) {
@@ -41,6 +45,9 @@ async function rutear(req, env, ctx) {
   const ruta = url.pathname;
 
   if (ruta === "/telegram" && req.method === "POST") return webhookTelegram(req, env, ctx);
+  if (ruta === "/ig/webhook") return webhookInstagram(req, env, ctx);
+  const lead = ruta.match(/^\/lead\/([\w-]+)$/);
+  if (lead) return leadWeb(req, env, lead[1]);
 
   // imagen de una propuesta: la usan Instagram, Telegram y el panel (el id no se puede adivinar)
   const img = ruta.match(/^\/img\/([\w-]+)\.jpg$/);
@@ -163,7 +170,7 @@ async function comandoTelegram(env, yo, chat, texto, mensaje) {
   if (!p || !puede(yo, p.cliente_id)) return responder(env, chat, "No hay posts pendientes. Mandá /nuevo para generar uno.");
   if (p.estado !== "pendiente") return responder(env, chat, "Ese post ya no está pendiente (" + p.estado + ").");
   const datos = JSON.parse(p.datos);
-  if (p.tipo === "respuesta") {
+  if (p.tipo === "respuesta" || p.tipo === "mensaje") {
     datos.respuesta = texto;
     datos.accion = "responder";
   } else {
@@ -179,6 +186,7 @@ async function enviarVistaPrevia(env, id) {
     "SELECT p.*, c.nombre AS cliente_nombre FROM propuestas p JOIN clientes c ON c.id = p.cliente_id WHERE p.id = ?"
   ).bind(id).first();
   if (p.tipo === "respuesta") return vistaPreviaRespuesta(env, id);
+  if (p.tipo === "mensaje") return vistaPreviaMensaje(env, id);
   const datos = JSON.parse(p.datos);
   const botones = { inline_keyboard: [[
     { text: "✅ Publicar", callback_data: "ok:" + id },
@@ -228,6 +236,11 @@ async function accionPropuesta(env, id, accion, cambios = null, chat = null) {
     if (p.estado === "pendiente") {
       await env.DB.prepare("UPDATE propuestas SET estado = 'descartada', actualizado = datetime('now') WHERE id = ?").bind(id).run();
     }
+    if (p.tipo === "mensaje") { // el cron propone otro mensaje en unos minutos
+      await env.DB.prepare("UPDATE contactos SET por_responder = 1 WHERE id = ?").bind(datos.contacto_id).run();
+      if (chat) await responder(env, chat, "🔄 En unos minutos te propongo otro mensaje.");
+      return { ok: true, nota: "En unos minutos llega otra propuesta" };
+    }
     if (p.tipo === "respuesta") { // el cron propone otra respuesta en unos minutos
       await env.DB.prepare("UPDATE comentarios SET estado = 'nuevo' WHERE id = ?").bind(datos.comentario_id).run();
       if (chat) await responder(env, chat, "🔄 En unos minutos te propongo otra respuesta.");
@@ -242,7 +255,7 @@ async function accionPropuesta(env, id, accion, cambios = null, chat = null) {
 // Ejecuta una propuesta aprobada según su tipo.
 function ejecutar(env, id) {
   return env.DB.prepare("SELECT tipo FROM propuestas WHERE id = ?").bind(id).first()
-    .then((p) => (p?.tipo === "respuesta" ? ejecutarRespuesta(env, id) : publicar(env, id)));
+    .then((p) => (p?.tipo === "respuesta" ? ejecutarRespuesta(env, id) : p?.tipo === "mensaje" ? ejecutarMensaje(env, id) : publicar(env, id)));
 }
 
 // Publica una propuesta aprobada. Si Instagram todavía está procesando la imagen, queda "aprobada"
@@ -434,7 +447,7 @@ async function apiPanel(req, env, ctx, yo, ruta, url) {
     }
     if (metodo === "PUT") {
       const b = await cuerpo();
-      const campos = ["nombre", "marca", "calendario", "hora_post", "zona", "auto_publicar", "activo", "ig_user_id"];
+      const campos = ["nombre", "marca", "calendario", "hora_post", "zona", "auto_publicar", "auto_mensajes", "activo", "ig_user_id"];
       for (const campo of campos) {
         if (b[campo] === undefined) continue;
         if (campo === "calendario") JSON.parse(b[campo]); // que sea JSON válido antes de guardarlo
@@ -444,6 +457,51 @@ async function apiPanel(req, env, ctx, yo, ruta, url) {
         await env.DB.prepare("UPDATE clientes SET ig_token = ?, ig_token_renovado = datetime('now') WHERE id = ?")
           .bind(await cifrar(env, b.ig_token.trim()), cli[1]).run();
       }
+      return Response.json({ ok: true });
+    }
+  }
+
+  const sus = ruta.match(/^clientes\/([\w-]+)\/suscribir$/);
+  if (sus && metodo === "POST") {
+    if (!puede(yo, sus[1])) return SIN_PERMISO();
+    return Response.json(await suscribirMensajes(env, sus[1]));
+  }
+
+  if (ruta === "leads" && metodo === "GET") {
+    const cliente = url.searchParams.get("cliente") || "";
+    if (cliente ? !puede(yo, cliente) : !agencia) return SIN_PERMISO();
+    const { results } = await env.DB.prepare(
+      "SELECT ct.*, cl.nombre AS cliente_nombre, (SELECT texto FROM mensajes m WHERE m.contacto_id = ct.id ORDER BY fecha DESC LIMIT 1) AS ultimo_texto " +
+      "FROM contactos ct JOIN clientes cl ON cl.id = ct.cliente_id WHERE (? = '' OR ct.cliente_id = ?) ORDER BY ct.ultimo_mensaje DESC LIMIT 200"
+    ).bind(cliente, cliente).all();
+    return Response.json(results);
+  }
+  const ld = ruta.match(/^leads\/([\w-]+)(\/mensaje)?$/);
+  if (ld) {
+    const ct = await env.DB.prepare("SELECT * FROM contactos WHERE id = ?").bind(ld[1]).first();
+    if (!ct || !puede(yo, ct.cliente_id)) return SIN_PERMISO();
+    if (metodo === "GET") {
+      const { results } = await env.DB.prepare("SELECT direccion, texto, fecha FROM mensajes WHERE contacto_id = ? ORDER BY fecha").bind(ct.id).all();
+      return Response.json({ ...ct, mensajes: results });
+    }
+    if (metodo === "PUT") {
+      const b = await cuerpo();
+      for (const campo of ["etapa", "notas", "nombre", "telefono", "email"]) {
+        if (b[campo] !== undefined) await env.DB.prepare(`UPDATE contactos SET ${campo} = ? WHERE id = ?`).bind(b[campo], ct.id).run();
+      }
+      return Response.json({ ok: true });
+    }
+    if (ld[2] && metodo === "POST") { // mensaje escrito a mano desde el panel
+      if (ct.canal !== "instagram") return Response.json({ error: "este contacto no vino por Instagram: escribile por su email o teléfono" }, { status: 400 });
+      const b = await cuerpo();
+      const c = await env.DB.prepare("SELECT * FROM clientes WHERE id = ?").bind(ct.cliente_id).first();
+      const mid = await enviarMensajeIG(env, c, ct.externo_id, String(b.texto || "").trim());
+      await env.DB.prepare("INSERT OR IGNORE INTO mensajes (id, cliente_id, contacto_id, direccion, texto) VALUES (?, ?, ?, 'saliente', ?)")
+        .bind(mid || "panel-" + Date.now(), c.id, ct.id, b.texto).run();
+      await env.DB.prepare("UPDATE contactos SET por_responder = 0, ultimo_mensaje = datetime('now') WHERE id = ?").bind(ct.id).run();
+      await env.DB.prepare(
+        "UPDATE propuestas SET estado = 'descartada' WHERE tipo = 'mensaje' AND estado = 'pendiente' AND json_extract(datos, '$.contacto_id') = ?"
+      ).bind(ct.id).run();
       return Response.json({ ok: true });
     }
   }
@@ -610,10 +668,24 @@ async function igVolver(env, url) {
     await env.DB.prepare("UPDATE clientes SET ig_user_id = ?, ig_token = ?, ig_token_renovado = datetime('now') WHERE id = ?")
       .bind(String(me.user_id), await cifrar(env, largo.access_token), cliente).run();
     await registrar(env, cliente, "instagram", "conectado @" + me.username);
+    await suscribirMensajes(env, cliente);
     return volver("Instagram conectado: @" + me.username);
   } catch (e) {
     await registrar(env, cliente, "error", "conectar Instagram: " + e.message);
     return volver("No se pudo conectar Instagram: " + e.message);
+  }
+}
+
+// Para que Instagram avise al hub de los mensajes directos de esta cuenta.
+async function suscribirMensajes(env, clienteId) {
+  const c = await env.DB.prepare("SELECT * FROM clientes WHERE id = ?").bind(clienteId).first();
+  try {
+    await igPost(`${IG_API}/${c.ig_user_id}/subscribed_apps`, { subscribed_fields: "messages", access_token: await descifrar(env, c.ig_token) });
+    await registrar(env, clienteId, "instagram", "mensajes directos activados");
+    return { ok: true };
+  } catch (e) {
+    await registrar(env, clienteId, "error", "activar mensajes directos: " + e.message);
+    return { error: String(e.message || e) };
   }
 }
 
@@ -700,6 +772,7 @@ async function tareasProgramadas(env) {
   // 4. estudio de contenido y reputación: métricas y comentarios de un cliente, respuestas propuestas, informe semanal
   await sincronizarSiguiente(env);
   await proponerRespuestas(env);
+  await proponerPendientesMensajes(env);
   await informesSemanales(env);
 
   await env.DB.prepare("DELETE FROM sesiones WHERE vence < datetime('now')").run();
