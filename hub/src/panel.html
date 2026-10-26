@@ -80,6 +80,7 @@
       <button data-vista="investigacion">Investigación</button>
       <button data-vista="leads">Leads</button>
       <button data-vista="comentarios">Comentarios</button>
+      <button data-vista="resenas">Reseñas</button>
       <button data-vista="clientes">Clientes</button>
       <button data-vista="actividad">Actividad</button>
     </nav>
@@ -148,7 +149,7 @@ document.querySelectorAll("nav button").forEach((b) => (b.onclick = () => ir(b.d
 function ir(vista) {
   document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("activo", b.dataset.vista === vista));
   try { localStorage.setItem("vista", vista); } catch {}
-  ({ propuestas: () => verPropuestas("pendiente"), historial: () => verPropuestas("todas"), generar: verGenerar, resultados: verResultados, investigacion: verInvestigacion, comentarios: verComentarios, leads: verLeads, clientes: verClientes, actividad: verActividad })[vista]();
+  ({ propuestas: () => verPropuestas("pendiente"), historial: () => verPropuestas("todas"), generar: verGenerar, resultados: verResultados, investigacion: verInvestigacion, comentarios: verComentarios, resenas: verResenas, leads: verLeads, clientes: verClientes, actividad: verActividad })[vista]();
 }
 
 async function iniciar() {
@@ -188,6 +189,7 @@ async function verPropuestas(estado) {
 function tarjetaPropuesta(p, recargar) {
   if (p.tipo === "respuesta") return tarjetaRespuesta(p, recargar);
   if (p.tipo === "mensaje") return tarjetaMensaje(p, recargar);
+  if (p.tipo === "resena") return tarjetaResena(p, recargar);
   const el = document.createElement("div");
   el.className = "tarjeta prop";
   const editable = p.estado === "pendiente" || p.estado === "error";
@@ -271,6 +273,46 @@ function tarjetaMensaje(p, recargar) {
   })));
   $("[data-lead]", el).onclick = () => verLead(d.contacto_id);
   return el;
+}
+
+function tarjetaResena(p, recargar) {
+  const d = p.datos;
+  const el = document.createElement("div");
+  el.className = "tarjeta prop";
+  const editable = p.estado === "pendiente" || p.estado === "error";
+  el.innerHTML = `
+    <div class="meta"><span class="chip ${esc(p.estado)}">${esc(p.estado)}</span> ${esc(p.cliente_nombre)} · Google Play · ${esc(d.app)}
+      ${d.urgente ? '<span class="chip error">urgente</span>' : ""}</div>
+    <h2>${"⭐".repeat(d.estrellas || 0)} ${esc(d.autor || "Usuario")}</h2>
+    <p style="white-space:pre-wrap;border-left:3px solid var(--borde);padding-left:10px">${esc(d.comentario || "(solo estrellas)")}</p>
+    ${editable ? `<label>Respuesta (máx. 350)</label><textarea class="respuesta" maxlength="350" style="min-height:90px">${esc(d.respuesta)}</textarea>` : `<p><b>Respuesta:</b> ${esc(d.respuesta)}</p>`}
+    ${p.resultado.error ? `<p class="error">${esc(p.resultado.error)}</p>` : ""}
+    <div class="fila" style="margin-top:12px">${
+      p.estado === "pendiente" ? `<button class="b prim" data-a="aprobar">✅ Responder</button><button class="b" data-a="otra">🔄 Otra</button><button class="b peligro" data-a="descartar">Ignorar</button>` :
+      p.estado === "error" ? `<button class="b prim" data-a="reintentar">Reintentar</button><button class="b peligro" data-a="descartar">Ignorar</button>` : ""}</div>`;
+  el.querySelectorAll("[data-a]").forEach((b) => (b.onclick = () => conBoton(b, async () => {
+    const r = await api(`propuestas/${p.id}/${b.dataset.a}`, { method: "POST", body: editable ? { respuesta: $(".respuesta", el).value } : {} });
+    aviso(r.nota || "Listo");
+    recargar();
+  })));
+  return el;
+}
+
+async function verResenas() {
+  const v = $("#vista");
+  v.innerHTML = `<div class="fila" style="margin-bottom:16px">
+      <select id="reCliente" style="max-width:260px" ${yo.rol === "agencia" ? "" : "hidden"}><option value="">Todos los clientes</option>${opcionesClientes()}</select>
+      <span class="meta" style="color:var(--suave)">Reseñas de Google Play (la API muestra las de la última semana). Las respuestas sugeridas van a "Para aprobar".</span></div>
+    <div class="tarjeta" id="reLista"></div>`;
+  $("#reCliente").onchange = () => cargar();
+  async function cargar() {
+    const lista = await api("resenas?cliente=" + encodeURIComponent(yo.rol === "agencia" ? $("#reCliente").value : yo.cliente_id));
+    $("#reLista").innerHTML = lista.length ? `<table><thead><tr><th>Fecha</th><th>App</th><th>Estrellas</th><th>Reseña</th><th>Respuesta</th><th>Estado</th></tr></thead><tbody>${
+      lista.map((r) => `<tr><td>${esc((r.fecha || "").slice(0, 10))}</td><td>${esc(r.app)}</td><td>${"⭐".repeat(r.estrellas || 0)}</td>
+        <td><b>${esc(r.autor)}</b><br>${esc(r.texto)}</td><td>${esc(r.respuesta || "")}</td><td><span class="chip">${esc(r.estado)}</span></td></tr>`).join("")
+    }</tbody></table>` : '<p class="vacio">Todavía no hay reseñas. Configurá Google Play en Mi cuenta / Clientes.</p>';
+  }
+  await cargar();
 }
 
 // ---------- leads
@@ -498,6 +540,13 @@ async function editarCliente(id) {
     <div class="fila"><input id="fProducto" placeholder="producto" style="max-width:220px"><input id="fArchivos" type="file" accept="image/*" multiple style="max-width:320px"><button class="b prim" id="fSubir">Subir</button></div>
     <div id="fotos"></div>
   </div>
+  <div class="tarjeta"><h2>Google Play (reseñas)</h2>
+    <label>Apps (nombre del paquete, uno por línea — ej. ar.com.kreatit)</label>
+    <textarea id="cPlayApps" style="min-height:70px">${esc(JSON.parse(c.play_apps || "[]").join("\n"))}</textarea>
+    <label>Cuenta de servicio de Google ${c.play_cuenta ? "(ya hay una guardada; subí otra solo para reemplazarla)" : ""}</label>
+    <input id="cPlayArchivo" type="file" accept=".json,application/json">
+    <p class="fila"><button class="b prim" id="cPlayGuardar">Guardar Google Play</button><button class="b" id="cPlayProbar">Probar conexión</button></p>
+    <p class="meta" id="cPlayEstado" style="color:var(--suave)"></p></div>
   <div class="tarjeta"><h2>Formulario web de contacto</h2>
     <p class="meta" style="color:var(--suave)">Pegá esto en la web del cliente: los datos llegan como leads al panel y avisan por Telegram.</p>
     <textarea readonly class="grande" style="min-height:150px" onclick="this.select()">${esc(`<form action="${location.origin}/lead/${id}" method="post">
@@ -513,6 +562,20 @@ async function editarCliente(id) {
     <div id="equipo"></div></div>`;
   verEquipo($("#equipo"), id);
   $("#volver").onclick = verClientes;
+  $("#cPlayGuardar").onclick = () => conBoton($("#cPlayGuardar"), async () => {
+    const apps = $("#cPlayApps").value.split("\n").map((x) => x.trim()).filter(Boolean);
+    await api("clientes/" + id, { method: "PUT", body: { play_apps: JSON.stringify(apps) } });
+    const archivo = $("#cPlayArchivo").files[0];
+    if (archivo) {
+      const r = await api(`clientes/${id}/play`, { method: "POST", body: { cuenta: await archivo.text() } });
+      $("#cPlayEstado").textContent = "Cuenta guardada: " + r.email;
+    }
+    aviso("Google Play guardado");
+  });
+  $("#cPlayProbar").onclick = () => conBoton($("#cPlayProbar"), async () => {
+    const r = await api(`clientes/${id}/play/probar`, { method: "POST", body: {} });
+    $("#cPlayEstado").textContent = r.error || r.apps.map((a) => a.ok ? `✅ ${a.app}: conectada (${a.resenas} reseñas de la última semana)` : `⚠️ ${a.app}: ${a.error}`).join(" · ");
+  });
   if ($("#cSuscribir")) $("#cSuscribir").onclick = () => conBoton($("#cSuscribir"), async () => {
     await api(`clientes/${id}/suscribir`, { method: "POST", body: {} });
     aviso("Mensajes directos activados");

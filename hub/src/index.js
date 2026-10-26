@@ -15,6 +15,7 @@ import {
   IG_API, tg, responder, destinatarios, notificar, avisarAgencia, registrar, igGet, igPost, esperar, hex,
   base64ABytes, claveAgente, cifrar, descifrar, horaLocal, textoFinal, despacharWorkflow,
 } from "./comun.js";
+import { sincronizarPlaySiguiente, proponerResenas, vistaPreviaResena, ejecutarResena, guardarCuentaPlay, probarPlay } from "./play.js";
 import { guardarInvestigacion, investigacionesSemanales, generarIdea } from "./investigacion.js";
 import {
   sincronizarSiguiente, proponerRespuestas, vistaPreviaRespuesta, ejecutarRespuesta, aprendizajes, informesSemanales, generarInforme,
@@ -178,8 +179,8 @@ async function comandoTelegram(env, yo, chat, texto, mensaje) {
   if (!p || !puede(yo, p.cliente_id)) return responder(env, chat, "No hay posts pendientes. Mandá /nuevo para generar uno.");
   if (p.estado !== "pendiente") return responder(env, chat, "Ese post ya no está pendiente (" + p.estado + ").");
   const datos = JSON.parse(p.datos);
-  if (p.tipo === "respuesta" || p.tipo === "mensaje") {
-    datos.respuesta = texto;
+  if (p.tipo === "respuesta" || p.tipo === "mensaje" || p.tipo === "resena") {
+    datos.respuesta = p.tipo === "resena" ? texto.slice(0, 350) : texto;
     datos.accion = "responder";
   } else {
     datos.caption = texto;
@@ -195,6 +196,7 @@ async function enviarVistaPrevia(env, id) {
   ).bind(id).first();
   if (p.tipo === "respuesta") return vistaPreviaRespuesta(env, id);
   if (p.tipo === "mensaje") return vistaPreviaMensaje(env, id);
+  if (p.tipo === "resena") return vistaPreviaResena(env, id);
   const datos = JSON.parse(p.datos);
   const botones = { inline_keyboard: [[
     { text: "✅ Publicar", callback_data: "ok:" + id },
@@ -238,11 +240,17 @@ async function accionPropuesta(env, id, accion, cambios = null, chat = null) {
   if (accion === "descartar") {
     await env.DB.prepare("UPDATE propuestas SET estado = 'descartada', actualizado = datetime('now') WHERE id = ?").bind(id).run();
     if (p.tipo === "respuesta") await env.DB.prepare("UPDATE comentarios SET estado = 'ignorado' WHERE id = ?").bind(datos.comentario_id).run();
+    if (p.tipo === "resena") await env.DB.prepare("UPDATE resenas SET estado = 'ignorado' WHERE id = ?").bind(datos.resena_id).run();
     return { ok: true };
   }
   if (accion === "otra") {
     if (p.estado === "pendiente") {
       await env.DB.prepare("UPDATE propuestas SET estado = 'descartada', actualizado = datetime('now') WHERE id = ?").bind(id).run();
+    }
+    if (p.tipo === "resena") { // el cron propone otra respuesta en unos minutos
+      await env.DB.prepare("UPDATE resenas SET estado = 'nuevo' WHERE id = ?").bind(datos.resena_id).run();
+      if (chat) await responder(env, chat, "🔄 En unos minutos te propongo otra respuesta.");
+      return { ok: true, nota: "En unos minutos llega otra respuesta" };
     }
     if (p.tipo === "mensaje") { // el cron propone otro mensaje en unos minutos
       await env.DB.prepare("UPDATE contactos SET por_responder = 1 WHERE id = ?").bind(datos.contacto_id).run();
@@ -263,7 +271,7 @@ async function accionPropuesta(env, id, accion, cambios = null, chat = null) {
 // Ejecuta una propuesta aprobada según su tipo.
 function ejecutar(env, id) {
   return env.DB.prepare("SELECT tipo FROM propuestas WHERE id = ?").bind(id).first()
-    .then((p) => (p?.tipo === "respuesta" ? ejecutarRespuesta(env, id) : p?.tipo === "mensaje" ? ejecutarMensaje(env, id) : publicar(env, id)));
+    .then((p) => ({ respuesta: ejecutarRespuesta, mensaje: ejecutarMensaje, resena: ejecutarResena }[p?.tipo] || publicar)(env, id));
 }
 
 // Publica una propuesta aprobada. Si Instagram todavía está procesando la imagen, queda "aprobada"
@@ -461,14 +469,15 @@ async function apiPanel(req, env, ctx, yo, ruta, url) {
         }
       }
       c.ig_token = c.ig_token ? "(guardado)" : "";
+      c.play_cuenta = c.play_cuenta ? "(guardada)" : "";
       return Response.json(c);
     }
     if (metodo === "PUT") {
       const b = await cuerpo();
-      const campos = ["nombre", "marca", "calendario", "hora_post", "zona", "auto_publicar", "auto_mensajes", "activo", "ig_user_id"];
+      const campos = ["nombre", "marca", "calendario", "hora_post", "zona", "auto_publicar", "auto_mensajes", "activo", "ig_user_id", "play_apps"];
       for (const campo of campos) {
         if (b[campo] === undefined) continue;
-        if (campo === "calendario") JSON.parse(b[campo]); // que sea JSON válido antes de guardarlo
+        if (campo === "calendario" || campo === "play_apps") JSON.parse(b[campo]); // que sea JSON válido antes de guardarlo
         await env.DB.prepare(`UPDATE clientes SET ${campo} = ? WHERE id = ?`).bind(b[campo], cli[1]).run();
       }
       if (b.ig_token) {
@@ -483,6 +492,25 @@ async function apiPanel(req, env, ctx, yo, ruta, url) {
   if (sus && metodo === "POST") {
     if (!puede(yo, sus[1])) return SIN_PERMISO();
     return Response.json(await suscribirMensajes(env, sus[1]));
+  }
+
+  const play = ruta.match(/^clientes\/([\w-]+)\/play(\/probar)?$/);
+  if (play && metodo === "POST") {
+    if (!puede(yo, play[1])) return SIN_PERMISO();
+    if (play[2]) return Response.json(await probarPlay(env, play[1]));
+    try {
+      return Response.json({ ok: true, email: await guardarCuentaPlay(env, play[1], (await cuerpo()).cuenta) });
+    } catch (e) {
+      return Response.json({ error: e.message }, { status: 400 });
+    }
+  }
+  if (ruta === "resenas" && metodo === "GET") {
+    const cliente = url.searchParams.get("cliente") || "";
+    if (cliente ? !puede(yo, cliente) : !agencia) return SIN_PERMISO();
+    const { results } = await env.DB.prepare(
+      "SELECT r.*, cl.nombre AS cliente_nombre FROM resenas r JOIN clientes cl ON cl.id = r.cliente_id WHERE (? = '' OR r.cliente_id = ?) ORDER BY r.fecha DESC LIMIT 100"
+    ).bind(cliente, cliente).all();
+    return Response.json(results);
   }
 
   if (ruta === "leads" && metodo === "GET") {
@@ -820,6 +848,8 @@ async function tareasProgramadas(env) {
   await sincronizarSiguiente(env);
   await proponerRespuestas(env);
   await proponerPendientesMensajes(env);
+  await sincronizarPlaySiguiente(env);
+  await proponerResenas(env);
   await informesSemanales(env);
   await investigacionesSemanales(env);
 
