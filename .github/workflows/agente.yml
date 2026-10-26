@@ -1,10 +1,8 @@
 name: Agente Instagram
 
 on:
-  schedule:
-    - cron: "0 12 * * *"     # genera el post del día (12:00 UTC = 09:00 Argentina)
-    - cron: "*/15 * * * *"   # revisa Telegram y publica lo aprobado
-    - cron: "0 13 1 * *"     # renueva el token de Instagram una vez por mes
+  # Reemplazado por el hub (hub/) + generar.yml: el hub programa, publica y renueva tokens.
+  # Queda solo para correr a mano (por ejemplo "verificar").
   workflow_dispatch:
     inputs:
       comando:

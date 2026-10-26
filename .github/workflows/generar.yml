@@ -1,0 +1,39 @@
+name: Generar post
+
+# Lo dispara el hub (Cloudflare) cuando toca el post diario de un cliente, o cuando pedís uno por Telegram o el panel.
+on:
+  workflow_dispatch:
+    inputs:
+      cliente:
+        description: "id del cliente (ej. kreatit)"
+        required: true
+      pedido:
+        description: "tema (opcional)"
+        default: ""
+      producto:
+        description: "(lo completa el hub en 'Otra') producto"
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  generar:
+    runs-on: ubuntu-latest
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+      CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      HUB_URL: ${{ vars.HUB_URL || 'https://kreatit-portero.federosciano.workers.dev' }}
+      CLIENTE: ${{ inputs.cliente }}
+      PEDIDO: ${{ inputs.pedido }}
+      PRODUCTO: ${{ inputs.producto }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python generador.py "$CLIENTE" "$PEDIDO" "$PRODUCTO"

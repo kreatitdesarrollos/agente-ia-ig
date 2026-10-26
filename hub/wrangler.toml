@@ -1,0 +1,25 @@
+name = "kreatit-portero"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+
+[vars]
+REPO = "kreatitdesarrollos/agente-ia-ig"
+URL_PUBLICA = "https://kreatit-portero.federosciano.workers.dev"
+CLIENTE_DEFAULT = "kreatit"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "kreatit-agencia"
+database_id = "e356c125-1330-42f5-94e4-297a66e6eed1"
+
+[[kv_namespaces]]
+binding = "ARCHIVOS"
+id = "9e91606ad9f74f21aff630a634592acc"
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+[[rules]]
+type = "Text"
+globs = ["**/*.html"]
+fallthrough = true

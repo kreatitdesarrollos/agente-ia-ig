@@ -230,7 +230,7 @@ def gemini(prompt, imagen_jpg=None):
     raise ultimo_error
 
 
-def pedir_texto(tipo_post, temas_previos, foto=None, pieza=False):
+def pedir_texto(tipo_post, temas_previos, foto=None, pieza=False, marca=None):
     prompt = """{marca}
 
 ---
@@ -248,7 +248,7 @@ Respondé SOLO con un JSON con estas claves:
 - "hashtags": string con 8 a 12 hashtags relevantes separados por espacio
 - "prompt_imagen": {prompt_img}
 {claves_pieza}""".format(
-        marca=MARCA.read_text(encoding="utf-8"),
+        marca=marca or MARCA.read_text(encoding="utf-8"),
         dia=DIAS[ahora().weekday()],
         fecha=ahora().strftime("%d/%m/%Y"),
         tipo=tipo_post,
