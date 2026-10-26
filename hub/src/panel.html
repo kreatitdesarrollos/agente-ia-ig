@@ -190,6 +190,7 @@ function tarjetaPropuesta(p, recargar) {
   if (p.tipo === "respuesta") return tarjetaRespuesta(p, recargar);
   if (p.tipo === "mensaje") return tarjetaMensaje(p, recargar);
   if (p.tipo === "resena") return tarjetaResena(p, recargar);
+  if (p.tipo === "email") return tarjetaEmail(p, recargar);
   const el = document.createElement("div");
   el.className = "tarjeta prop";
   const editable = p.estado === "pendiente" || p.estado === "error";
@@ -298,6 +299,31 @@ function tarjetaResena(p, recargar) {
   return el;
 }
 
+function tarjetaEmail(p, recargar) {
+  const d = p.datos;
+  const el = document.createElement("div");
+  el.className = "tarjeta prop";
+  const editable = p.estado === "pendiente" || p.estado === "error";
+  el.innerHTML = `
+    <div class="meta"><span class="chip ${esc(p.estado)}">${esc(p.estado)}</span> ${esc(p.cliente_nombre)} · email ${d.paso + 1} de ${d.total}</div>
+    <h2>✉️ ${esc(d.nombre || "")} &lt;${esc(d.email)}&gt;</h2>
+    <p class="meta">Objetivo: ${esc(d.objetivo)}</p>
+    ${editable ? `<label>Asunto</label><input class="asunto" value="${esc(d.asunto)}"><label>Cuerpo</label><textarea class="cuerpo" style="min-height:200px">${esc(d.cuerpo)}</textarea>` :
+      `<p><b>${esc(d.asunto)}</b></p><p style="white-space:pre-wrap">${esc(d.cuerpo)}</p>`}
+    ${p.resultado.error ? `<p class="error">${esc(p.resultado.error)}</p>` : ""}
+    <div class="fila" style="margin-top:12px">${
+      p.estado === "pendiente" ? `<button class="b prim" data-a="aprobar">✅ Enviar</button><button class="b" data-a="otra">🔄 Otro</button><button class="b peligro" data-a="descartar">Saltear</button>` :
+      p.estado === "error" ? `<button class="b prim" data-a="reintentar">Reintentar</button><button class="b peligro" data-a="descartar">Saltear</button>` : ""}
+      <button class="b" data-lead="${esc(d.contacto_id)}">Ver lead</button></div>`;
+  el.querySelectorAll("[data-a]").forEach((b) => (b.onclick = () => conBoton(b, async () => {
+    const r = await api(`propuestas/${p.id}/${b.dataset.a}`, { method: "POST", body: editable ? { asunto: $(".asunto", el).value, cuerpo: $(".cuerpo", el).value } : {} });
+    aviso(r.error || r.nota || (b.dataset.a === "aprobar" ? "Enviado" : "Listo"));
+    recargar();
+  })));
+  $("[data-lead]", el).onclick = () => verLead(d.contacto_id);
+  return el;
+}
+
 async function verResenas() {
   const v = $("#vista");
   v.innerHTML = `<div class="fila" style="margin-bottom:16px">
@@ -359,6 +385,10 @@ async function verLead(id) {
           background:${m.direccion === "entrante" ? "var(--fondo)" : "var(--acento)"};color:${m.direccion === "entrante" ? "var(--texto)" : "var(--acento-texto)"}">${esc(m.texto)}
           <div style="font-size:11px;opacity:.7">${esc(m.fecha)} UTC</div></div>`).join("") || '<p class="vacio">Sin mensajes</p>'
       }</div>
+      <h3>Emails de seguimiento</h3>
+      ${l.baja ? '<p class="meta">🚫 Dado de baja: no recibe emails.</p>' : l.email ? `<p class="meta">Paso ${l.nutricion_paso} de la secuencia${l.nutricion_proximo && !l.nutricion_proximo.startsWith("9999") ? " · próximo: " + esc(l.nutricion_proximo) + " UTC" : ""}</p>` : '<p class="meta">Sin email: no entra en la secuencia.</p>'}
+      ${l.emails.map((e) => `<p class="meta">${esc(e.fecha)} · ${e.estado === "enviado" ? "✅" : "⚠️"} ${esc(e.asunto)}${e.estado !== "enviado" ? " — " + esc(e.detalle) : ""}</p>`).join("")}
+      ${l.email && !l.baja ? '<p><button class="b peligro" id="ldBaja">Dejar de enviarle emails</button></p>' : ""}
       ${l.canal === "instagram" ? `<label>Escribirle (Instagram deja hasta 24 h después de su último mensaje)</label><textarea id="ldMsg" style="min-height:70px"></textarea>
         <p><button class="b prim" id="ldEnviar">Enviar</button></p>` : `<p class="meta">Vino por la web: escribile por email o teléfono.</p>`}
     </div></div>`;
@@ -366,6 +396,10 @@ async function verLead(id) {
   $("#ldGuardar").onclick = () => conBoton($("#ldGuardar"), async () => {
     await api("leads/" + id, { method: "PUT", body: { etapa: $("#ldEtapa").value, nombre: $("#ldNombre").value, telefono: $("#ldTel").value, email: $("#ldEmail").value, notas: $("#ldNotas").value } });
     aviso("Guardado");
+  });
+  if ($("#ldBaja")) $("#ldBaja").onclick = () => conBoton($("#ldBaja"), async () => {
+    await api("leads/" + id, { method: "PUT", body: { baja: 1 } });
+    verLead(id);
   });
   if ($("#ldEnviar")) $("#ldEnviar").onclick = () => conBoton($("#ldEnviar"), async () => {
     await api(`leads/${id}/mensaje`, { method: "POST", body: { texto: $("#ldMsg").value } });
@@ -510,6 +544,7 @@ async function verClientes() {
 
 async function editarCliente(id) {
   const c = await api("clientes/" + id);
+  const nut = JSON.parse(c.nutricion || "{}");
   $("#vista").innerHTML = `<p ${yo.rol === "agencia" ? "" : "hidden"}><button class="b" id="volver">← Clientes</button></p>
   <div class="tarjeta"><h2>${esc(c.nombre)}</h2>
     <div class="grilla">
@@ -547,6 +582,17 @@ async function editarCliente(id) {
     <input id="cPlayArchivo" type="file" accept=".json,application/json">
     <p class="fila"><button class="b prim" id="cPlayGuardar">Guardar Google Play</button><button class="b" id="cPlayProbar">Probar conexión</button></p>
     <p class="meta" id="cPlayEstado" style="color:var(--suave)"></p></div>
+  <div class="tarjeta"><h2>Nutrición por email</h2>
+    <p class="meta" style="color:var(--suave)">Los leads con email reciben esta secuencia hasta que pasan a "cliente" o "perdido", o se dan de baja. Se envía con Brevo desde el dominio del cliente (tiene que estar verificado en Brevo).</p>
+    <div class="grilla">
+      <div><label>Estado</label><select id="nActivo"><option value="0">Apagada</option><option value="1" ${nut.activo ? "selected" : ""}>Activa</option></select></div>
+      <div><label>Modo</label><select id="nAuto"><option value="0">Con mi aprobación</option><option value="1" ${nut.auto ? "selected" : ""}>Enviar solos</option></select></div>
+      <div><label>Nombre del remitente</label><input id="nNombre" value="${esc(nut.remitente_nombre || c.nombre)}"></div>
+      <div><label>Email del remitente</label><input id="nEmail" value="${esc(nut.remitente_email || "")}" placeholder="hola@sudominio.com"></div>
+      <div><label>Las respuestas van a</label><input id="nResp" value="${esc(nut.responder_a || "")}" placeholder="email real donde leer las respuestas"></div>
+    </div>
+    <h3>Pasos</h3><div id="nPasos"></div>
+    <p class="fila"><button class="b" id="nAgregar">+ Agregar paso</button><button class="b prim" id="nGuardar">Guardar nutrición</button></p></div>
   <div class="tarjeta"><h2>Formulario web de contacto</h2>
     <p class="meta" style="color:var(--suave)">Pegá esto en la web del cliente: los datos llegan como leads al panel y avisan por Telegram.</p>
     <textarea readonly class="grande" style="min-height:150px" onclick="this.select()">${esc(`<form action="${location.origin}/lead/${id}" method="post">
@@ -562,6 +608,28 @@ async function editarCliente(id) {
     <div id="equipo"></div></div>`;
   verEquipo($("#equipo"), id);
   $("#volver").onclick = verClientes;
+  let pasos = (nut.pasos || []).map((p) => ({ ...p }));
+  const dibujarPasos = () => {
+    $("#nPasos").innerHTML = pasos.map((p, i) => `<div class="fila" style="margin-bottom:8px;align-items:flex-start">
+      <div style="width:110px"><label style="margin-top:0">Día</label><input type="number" min="0" data-pd="${i}" value="${esc(p.dias)}"></div>
+      <div style="flex:1;min-width:200px"><label style="margin-top:0">Objetivo del email ${i + 1}</label><input data-po="${i}" value="${esc(p.objetivo)}"></div>
+      <button class="b peligro" data-pq="${i}" style="margin-top:22px">×</button></div>`).join("") || '<p class="meta">Sin pasos.</p>';
+    $("#nPasos").querySelectorAll("[data-pd]").forEach((x) => (x.oninput = () => (pasos[x.dataset.pd].dias = Number(x.value))));
+    $("#nPasos").querySelectorAll("[data-po]").forEach((x) => (x.oninput = () => (pasos[x.dataset.po].objetivo = x.value)));
+    $("#nPasos").querySelectorAll("[data-pq]").forEach((x) => (x.onclick = () => { pasos.splice(Number(x.dataset.pq), 1); dibujarPasos(); }));
+  };
+  dibujarPasos();
+  $("#nAgregar").onclick = () => { pasos.push({ dias: (pasos.at(-1)?.dias || 0) + 3, objetivo: "" }); dibujarPasos(); };
+  $("#nGuardar").onclick = () => conBoton($("#nGuardar"), async () => {
+    pasos.sort((a, b) => a.dias - b.dias);
+    if ($("#nActivo").value === "1" && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test($("#nEmail").value.trim())) throw new Error("Falta el email del remitente");
+    await api("clientes/" + id, { method: "PUT", body: { nutricion: JSON.stringify({
+      activo: $("#nActivo").value === "1", auto: $("#nAuto").value === "1", remitente_nombre: $("#nNombre").value.trim(),
+      remitente_email: $("#nEmail").value.trim(), responder_a: $("#nResp").value.trim(), pasos: pasos.filter((p) => p.objetivo.trim()),
+    }) } });
+    aviso("Nutrición guardada");
+    dibujarPasos();
+  });
   $("#cPlayGuardar").onclick = () => conBoton($("#cPlayGuardar"), async () => {
     const apps = $("#cPlayApps").value.split("\n").map((x) => x.trim()).filter(Boolean);
     await api("clientes/" + id, { method: "PUT", body: { play_apps: JSON.stringify(apps) } });

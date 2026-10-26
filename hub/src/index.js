@@ -16,6 +16,7 @@ import {
   base64ABytes, claveAgente, cifrar, descifrar, horaLocal, textoFinal, despacharWorkflow,
 } from "./comun.js";
 import { sincronizarPlaySiguiente, proponerResenas, vistaPreviaResena, ejecutarResena, guardarCuentaPlay, probarPlay } from "./play.js";
+import { nutricionPendiente, vistaPreviaEmail, ejecutarEmail, saltearEmail, otroEmail, paginaBaja } from "./nutricion.js";
 import { guardarInvestigacion, investigacionesSemanales, generarIdea } from "./investigacion.js";
 import {
   sincronizarSiguiente, proponerRespuestas, vistaPreviaRespuesta, ejecutarRespuesta, aprendizajes, informesSemanales, generarInforme,
@@ -50,6 +51,8 @@ async function rutear(req, env, ctx) {
   if (ruta === "/ig/webhook") return webhookInstagram(req, env, ctx);
   const lead = ruta.match(/^\/lead\/([\w-]+)$/);
   if (lead) return leadWeb(req, env, lead[1]);
+  const baja = ruta.match(/^\/baja\/([\w.-]+)$/);
+  if (baja) return paginaBaja(req, env, baja[1]);
 
   // imagen de una propuesta: la usan Instagram, Telegram y el panel (el id no se puede adivinar)
   const img = ruta.match(/^\/img\/([\w-]+)\.jpg$/);
@@ -179,7 +182,9 @@ async function comandoTelegram(env, yo, chat, texto, mensaje) {
   if (!p || !puede(yo, p.cliente_id)) return responder(env, chat, "No hay posts pendientes. Mandá /nuevo para generar uno.");
   if (p.estado !== "pendiente") return responder(env, chat, "Ese post ya no está pendiente (" + p.estado + ").");
   const datos = JSON.parse(p.datos);
-  if (p.tipo === "respuesta" || p.tipo === "mensaje" || p.tipo === "resena") {
+  if (p.tipo === "email") {
+    datos.cuerpo = texto;
+  } else if (p.tipo === "respuesta" || p.tipo === "mensaje" || p.tipo === "resena") {
     datos.respuesta = p.tipo === "resena" ? texto.slice(0, 350) : texto;
     datos.accion = "responder";
   } else {
@@ -197,6 +202,7 @@ async function enviarVistaPrevia(env, id) {
   if (p.tipo === "respuesta") return vistaPreviaRespuesta(env, id);
   if (p.tipo === "mensaje") return vistaPreviaMensaje(env, id);
   if (p.tipo === "resena") return vistaPreviaResena(env, id);
+  if (p.tipo === "email") return vistaPreviaEmail(env, id);
   const datos = JSON.parse(p.datos);
   const botones = { inline_keyboard: [[
     { text: "✅ Publicar", callback_data: "ok:" + id },
@@ -229,6 +235,8 @@ async function accionPropuesta(env, id, accion, cambios = null, chat = null) {
     if (cambios.caption !== undefined) datos.caption = cambios.caption;
     if (cambios.hashtags !== undefined) datos.hashtags = cambios.hashtags;
     if (cambios.respuesta !== undefined) datos.respuesta = cambios.respuesta;
+    if (cambios.asunto !== undefined) datos.asunto = cambios.asunto;
+    if (cambios.cuerpo !== undefined) datos.cuerpo = cambios.cuerpo;
     await env.DB.prepare("UPDATE propuestas SET datos = ?, actualizado = datetime('now') WHERE id = ?").bind(JSON.stringify(datos), id).run();
   }
 
@@ -241,11 +249,17 @@ async function accionPropuesta(env, id, accion, cambios = null, chat = null) {
     await env.DB.prepare("UPDATE propuestas SET estado = 'descartada', actualizado = datetime('now') WHERE id = ?").bind(id).run();
     if (p.tipo === "respuesta") await env.DB.prepare("UPDATE comentarios SET estado = 'ignorado' WHERE id = ?").bind(datos.comentario_id).run();
     if (p.tipo === "resena") await env.DB.prepare("UPDATE resenas SET estado = 'ignorado' WHERE id = ?").bind(datos.resena_id).run();
+    if (p.tipo === "email") await saltearEmail(env, datos);
     return { ok: true };
   }
   if (accion === "otra") {
     if (p.estado === "pendiente") {
       await env.DB.prepare("UPDATE propuestas SET estado = 'descartada', actualizado = datetime('now') WHERE id = ?").bind(id).run();
+    }
+    if (p.tipo === "email") { // el cron escribe otro email en unos minutos
+      await otroEmail(env, datos);
+      if (chat) await responder(env, chat, "🔄 En unos minutos te propongo otro email.");
+      return { ok: true, nota: "En unos minutos llega otro email" };
     }
     if (p.tipo === "resena") { // el cron propone otra respuesta en unos minutos
       await env.DB.prepare("UPDATE resenas SET estado = 'nuevo' WHERE id = ?").bind(datos.resena_id).run();
@@ -271,7 +285,7 @@ async function accionPropuesta(env, id, accion, cambios = null, chat = null) {
 // Ejecuta una propuesta aprobada según su tipo.
 function ejecutar(env, id) {
   return env.DB.prepare("SELECT tipo FROM propuestas WHERE id = ?").bind(id).first()
-    .then((p) => ({ respuesta: ejecutarRespuesta, mensaje: ejecutarMensaje, resena: ejecutarResena }[p?.tipo] || publicar)(env, id));
+    .then((p) => ({ respuesta: ejecutarRespuesta, mensaje: ejecutarMensaje, resena: ejecutarResena, email: ejecutarEmail }[p?.tipo] || publicar)(env, id));
 }
 
 // Publica una propuesta aprobada. Si Instagram todavía está procesando la imagen, queda "aprobada"
@@ -474,10 +488,10 @@ async function apiPanel(req, env, ctx, yo, ruta, url) {
     }
     if (metodo === "PUT") {
       const b = await cuerpo();
-      const campos = ["nombre", "marca", "calendario", "hora_post", "zona", "auto_publicar", "auto_mensajes", "activo", "ig_user_id", "play_apps"];
+      const campos = ["nombre", "marca", "calendario", "hora_post", "zona", "auto_publicar", "auto_mensajes", "activo", "ig_user_id", "play_apps", "nutricion"];
       for (const campo of campos) {
         if (b[campo] === undefined) continue;
-        if (campo === "calendario" || campo === "play_apps") JSON.parse(b[campo]); // que sea JSON válido antes de guardarlo
+        if (["calendario", "play_apps", "nutricion"].includes(campo)) JSON.parse(b[campo]); // que sea JSON válido antes de guardarlo
         await env.DB.prepare(`UPDATE clientes SET ${campo} = ? WHERE id = ?`).bind(b[campo], cli[1]).run();
       }
       if (b.ig_token) {
@@ -528,11 +542,12 @@ async function apiPanel(req, env, ctx, yo, ruta, url) {
     if (!ct || !puede(yo, ct.cliente_id)) return SIN_PERMISO();
     if (metodo === "GET") {
       const { results } = await env.DB.prepare("SELECT direccion, texto, fecha FROM mensajes WHERE contacto_id = ? ORDER BY fecha").bind(ct.id).all();
-      return Response.json({ ...ct, mensajes: results });
+      const emails = (await env.DB.prepare("SELECT paso, asunto, estado, detalle, fecha FROM emails WHERE contacto_id = ? ORDER BY fecha").bind(ct.id).all()).results;
+      return Response.json({ ...ct, mensajes: results, emails });
     }
     if (metodo === "PUT") {
       const b = await cuerpo();
-      for (const campo of ["etapa", "notas", "nombre", "telefono", "email"]) {
+      for (const campo of ["etapa", "notas", "nombre", "telefono", "email", "baja"]) {
         if (b[campo] !== undefined) await env.DB.prepare(`UPDATE contactos SET ${campo} = ? WHERE id = ?`).bind(b[campo], ct.id).run();
       }
       return Response.json({ ok: true });
@@ -850,6 +865,7 @@ async function tareasProgramadas(env) {
   await proponerPendientesMensajes(env);
   await sincronizarPlaySiguiente(env);
   await proponerResenas(env);
+  await nutricionPendiente(env);
   await informesSemanales(env);
   await investigacionesSemanales(env);
 
