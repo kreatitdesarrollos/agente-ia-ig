@@ -1,17 +1,19 @@
 // Hub de la agencia (Cloudflare Worker).
 //
+// - Usuarios con roles: la agencia ve todos los clientes; cada cliente entra a su panel y ve solo lo suyo.
+//   Se invitan con un link de Telegram; el login es con un código que llega a su Telegram.
 // - Recibe a Telegram al instante (webhook): botones de aprobación y comandos (/nuevo, /clientes, /panel).
-// - Guarda clientes, fotos y la fila de propuestas en D1; las imágenes en KV.
-// - Publica en Instagram apenas aprobás (sin esperar a GitHub).
-// - Cada 5 minutos (cron): genera el post diario de cada cliente, reintenta publicaciones y renueva tokens.
-// - Sirve el panel de administración en /panel (login con código por Telegram).
+// - Guarda clientes, usuarios, fotos y la fila de propuestas en D1; las imágenes en KV.
+// - Publica en Instagram apenas se aprueba. Los clientes conectan su Instagram con "Conectar Instagram" (OAuth).
+// - Cada 5 minutos (cron): post diario de cada cliente, reintentos de publicación y renovación de tokens.
 // - GitHub Actions (generar.yml) solo genera los posts: pide el trabajo acá y devuelve la propuesta.
 //
-// Secretos: TELEGRAM_TOKEN, TELEGRAM_CHAT_ID (tu chat de admin), GH_TOKEN, CLAVE_CIFRADO.
+// Secretos: TELEGRAM_TOKEN, GH_TOKEN, CLAVE_CIFRADO, IG_APP_SECRET (opcional, para "Conectar Instagram").
 
 import PANEL from "./panel.html";
 
 const IG_API = "https://graph.instagram.com/v23.0";
+const IG_PERMISOS = "instagram_business_basic,instagram_business_content_publish,instagram_business_manage_comments,instagram_business_manage_insights";
 
 export default {
   async fetch(req, env, ctx) {
@@ -34,7 +36,7 @@ async function rutear(req, env, ctx) {
 
   if (ruta === "/telegram" && req.method === "POST") return webhookTelegram(req, env, ctx);
 
-  // imagen pública de una propuesta: la usan Instagram, Telegram y el panel
+  // imagen de una propuesta: la usan Instagram, Telegram y el panel (el id no se puede adivinar)
   const img = ruta.match(/^\/img\/([\w-]+)\.jpg$/);
   if (img) {
     const datos = await env.ARCHIVOS.get("img:" + img[1], "arrayBuffer");
@@ -51,14 +53,48 @@ async function rutear(req, env, ctx) {
     return apiAgente(req, env, ctx, ruta.slice("/api/agente/".length), url);
   }
 
-  if (ruta === "/api/panel/codigo" && req.method === "POST") return enviarCodigo(env);
+  if (ruta === "/api/panel/codigo" && req.method === "POST") return enviarCodigo(req, env);
   if (ruta === "/api/panel/login" && req.method === "POST") return login(req, env);
+
+  const yo = await usuarioDeSesion(req, env);
+  if (ruta === "/ig/conectar") return igConectar(env, yo, url);
+  if (ruta === "/ig/volver") return igVolver(env, url);
   if (ruta.startsWith("/api/panel/")) {
-    if (!(await sesionValida(req, env))) return Response.json({ error: "sin sesión" }, { status: 401 });
-    return apiPanel(req, env, ctx, ruta.slice("/api/panel/".length), url);
+    if (!yo) return Response.json({ error: "sin sesión" }, { status: 401 });
+    return apiPanel(req, env, ctx, yo, ruta.slice("/api/panel/".length), url);
   }
 
   return new Response("no", { status: 404 });
+}
+
+// ---------------------------------------------------------------- permisos
+
+function puede(yo, clienteId) {
+  return yo && (yo.rol === "agencia" || yo.cliente_id === clienteId);
+}
+
+const SIN_PERMISO = () => Response.json({ error: "no tenés acceso a ese cliente" }, { status: 403 });
+
+// Quiénes reciben los avisos de un cliente: la agencia y los usuarios de ese cliente, con Telegram vinculado.
+async function destinatarios(env, clienteId, soloPrevias = false) {
+  const { results } = await env.DB.prepare(
+    "SELECT tg_chat FROM usuarios WHERE activo = 1 AND tg_chat IS NOT NULL AND (rol = 'agencia' OR cliente_id = ?)" +
+    (soloPrevias ? " AND recibe_previas = 1" : "")
+  ).bind(clienteId).all();
+  return results.map((u) => u.tg_chat);
+}
+
+async function notificar(env, clienteId, texto) {
+  for (const chat of await destinatarios(env, clienteId)) await tg(env, "sendMessage", { chat_id: chat, text: texto });
+}
+
+async function avisarAgencia(env, texto) {
+  const { results } = await env.DB.prepare("SELECT tg_chat FROM usuarios WHERE rol = 'agencia' AND activo = 1 AND tg_chat IS NOT NULL").all();
+  for (const u of results) await tg(env, "sendMessage", { chat_id: u.tg_chat, text: texto });
+}
+
+function responder(env, chat, texto) {
+  return tg(env, "sendMessage", { chat_id: chat, text: texto });
 }
 
 // ---------------------------------------------------------------- Telegram
@@ -68,61 +104,84 @@ async function webhookTelegram(req, env, ctx) {
     return new Response("no", { status: 403 });
   }
   const u = await req.json();
-  const chat = String((u.callback_query ? u.callback_query.message : u.message)?.chat?.id ?? "");
-  if (chat !== env.TELEGRAM_CHAT_ID) return new Response("ok");
+  const mensaje = u.callback_query ? u.callback_query.message : u.message;
+  const chat = String(mensaje?.chat?.id ?? "");
+  if (!chat) return new Response("ok");
+  const yo = await env.DB.prepare("SELECT * FROM usuarios WHERE tg_chat = ? AND activo = 1").bind(chat).first();
 
   if (u.callback_query) {
     const cb = u.callback_query;
     const [accion, id] = cb.data.split(":");
+    const p = await env.DB.prepare("SELECT cliente_id FROM propuestas WHERE id = ?").bind(id).first();
+    if (!p || !puede(yo, p.cliente_id)) {
+      await tg(env, "answerCallbackQuery", { callback_query_id: cb.id, text: "No tenés acceso a este post" });
+      return new Response("ok");
+    }
     const textos = { ok: "✅ Publicando...", otra: "🔄 Generando otra...", no: "🗑️ Descartado" };
     await tg(env, "answerCallbackQuery", { callback_query_id: cb.id, text: textos[accion] || "Recibido" });
-    ctx.waitUntil(accionPropuesta(env, id, accion === "ok" ? "aprobar" : accion === "otra" ? "otra" : "descartar"));
+    ctx.waitUntil(accionPropuesta(env, id, accion === "ok" ? "aprobar" : accion === "otra" ? "otra" : "descartar", null, chat));
     return new Response("ok");
   }
 
   const texto = (u.message?.text || "").trim();
   if (!texto) return new Response("ok");
-  ctx.waitUntil(comandoTelegram(env, texto, u.message));
+  ctx.waitUntil(comandoTelegram(env, yo, chat, texto, u.message));
   return new Response("ok");
 }
 
-async function comandoTelegram(env, texto, mensaje) {
+async function comandoTelegram(env, yo, chat, texto, mensaje) {
   const [cmd, ...resto] = texto.split(/\s+/);
   const base = cmd.split("@")[0].toLowerCase();
 
-  if (base === "/start") return avisar(env, "Hola! Tu chat_id es " + mensaje.chat.id + ". Panel: " + env.URL_PUBLICA + "/panel");
-  if (base === "/panel") return avisar(env, "Panel: " + env.URL_PUBLICA + "/panel");
+  // invitación: /start inv_xxxx (viene del link t.me/bot?start=inv_xxxx)
+  if (base === "/start" && resto[0]?.startsWith("inv_")) {
+    const inv = await env.DB.prepare("SELECT u.*, c.nombre AS cliente_nombre FROM usuarios u LEFT JOIN clientes c ON c.id = u.cliente_id WHERE u.invitacion = ? AND u.activo = 1")
+      .bind(resto[0].slice(4)).first();
+    if (!inv) return responder(env, chat, "Esa invitación no es válida o ya se usó. Pedile una nueva a quien te invitó.");
+    await env.DB.prepare("UPDATE usuarios SET tg_chat = NULL WHERE tg_chat = ?").bind(chat).run();
+    await env.DB.prepare("UPDATE usuarios SET tg_chat = ?, invitacion = NULL WHERE id = ?").bind(chat, inv.id).run();
+    await registrar(env, inv.cliente_id, "usuario", `${inv.nombre} vinculó su Telegram`);
+    return responder(env, chat, `¡Hola ${inv.nombre}! Ya quedaste vinculado${inv.cliente_nombre ? " a " + inv.cliente_nombre : ""}.\n\n` +
+      `• Te van a llegar acá los posts para aprobar.\n• Para entrar al panel usá "${inv.usuario}" en ${env.URL_PUBLICA}/panel y te mando el código acá.\n` +
+      `• /nuevo tema → genera un post nuevo.`);
+  }
 
-  if (base === "/clientes") {
+  if (!yo) return responder(env, chat, "Este bot es privado. Si te invitaron, abrí el link de invitación que te pasaron.");
+
+  if (base === "/start" || base === "/panel") return responder(env, chat, `Panel: ${env.URL_PUBLICA}/panel (usuario: ${yo.usuario})`);
+
+  if (base === "/clientes" && yo.rol === "agencia") {
     const { results } = await env.DB.prepare("SELECT id, nombre, activo FROM clientes ORDER BY creado").all();
-    return avisar(env, "Clientes:\n" + results.map((c) => `${c.activo ? "•" : "◦"} ${c.id} — ${c.nombre}`).join("\n") +
+    return responder(env, chat, "Clientes:\n" + results.map((c) => `${c.activo ? "•" : "◦"} ${c.id} — ${c.nombre}`).join("\n") +
       "\n\nPara pedir un post de otro cliente: /nuevo @cliente tema");
   }
 
   if (base === "/nuevo") {
-    let cliente = env.CLIENTE_DEFAULT;
-    if (resto[0]?.startsWith("@")) cliente = resto.shift().slice(1).toLowerCase();
+    let cliente = yo.rol === "agencia" ? env.CLIENTE_DEFAULT : yo.cliente_id;
+    if (resto[0]?.startsWith("@") && yo.rol === "agencia") cliente = resto.shift().slice(1).toLowerCase();
     const c = await env.DB.prepare("SELECT id, nombre FROM clientes WHERE id = ?").bind(cliente).first();
-    if (!c) return avisar(env, `No encontré el cliente "${cliente}". Mirá la lista con /clientes`);
+    if (!c) return responder(env, chat, `No encontré el cliente "${cliente}". Mirá la lista con /clientes`);
     const pedido = resto.join(" ").trim();
-    await avisar(env, `✨ Generando un post para ${c.nombre}` + (pedido ? ` sobre: ${pedido}` : "") + "... (1 o 2 minutos)");
+    await responder(env, chat, `✨ Generando un post para ${c.nombre}` + (pedido ? ` sobre: ${pedido}` : "") + "... (1 o 2 minutos)");
     return despacharGenerar(env, c.id, pedido, "");
   }
 
-  // texto suelto: reemplaza el caption de la propuesta a la que respondés (o la última pendiente)
+  // texto suelto: reemplaza el caption de la propuesta a la que respondés (o la última pendiente que podés ver)
   let p = null;
   if (mensaje.reply_to_message) {
-    const mid = mensaje.reply_to_message.message_id;
-    p = await env.DB.prepare("SELECT * FROM propuestas WHERE tg_message_id = ? OR json_extract(datos, '$.tg_foto_id') = ?")
-      .bind(mid, mid).first();
+    p = await env.DB.prepare("SELECT p.* FROM mensajes_tg m JOIN propuestas p ON p.id = m.propuesta_id WHERE m.chat_id = ? AND m.message_id = ?")
+      .bind(chat, mensaje.reply_to_message.message_id).first();
   }
-  if (!p) p = await env.DB.prepare("SELECT * FROM propuestas WHERE estado = 'pendiente' ORDER BY creado DESC LIMIT 1").first();
-  if (!p) return avisar(env, "No hay posts pendientes. Mandá /nuevo para generar uno.");
+  if (!p) {
+    p = await env.DB.prepare("SELECT * FROM propuestas WHERE estado = 'pendiente' AND (? = 'agencia' OR cliente_id = ?) ORDER BY creado DESC LIMIT 1")
+      .bind(yo.rol, yo.cliente_id).first();
+  }
+  if (!p || !puede(yo, p.cliente_id)) return responder(env, chat, "No hay posts pendientes. Mandá /nuevo para generar uno.");
+  if (p.estado !== "pendiente") return responder(env, chat, "Ese post ya no está pendiente (" + p.estado + ").");
   const datos = JSON.parse(p.datos);
   datos.caption = texto;
   datos.hashtags = "";
-  await env.DB.prepare("UPDATE propuestas SET datos = ?, actualizado = datetime('now') WHERE id = ?")
-    .bind(JSON.stringify(datos), p.id).run();
+  await env.DB.prepare("UPDATE propuestas SET datos = ?, actualizado = datetime('now') WHERE id = ?").bind(JSON.stringify(datos), p.id).run();
   return enviarVistaPrevia(env, p.id);
 }
 
@@ -131,38 +190,37 @@ async function enviarVistaPrevia(env, id) {
     "SELECT p.*, c.nombre AS cliente_nombre FROM propuestas p JOIN clientes c ON c.id = p.cliente_id WHERE p.id = ?"
   ).bind(id).first();
   const datos = JSON.parse(p.datos);
-  const foto = await tg(env, "sendPhoto", {
-    chat_id: env.TELEGRAM_CHAT_ID,
-    photo: `${env.URL_PUBLICA}/img/${id}.jpg?v=${Date.now()}`,
-    caption: `📝 ${p.cliente_nombre}: ${p.titulo}`,
-  });
   const botones = { inline_keyboard: [[
     { text: "✅ Publicar", callback_data: "ok:" + id },
     { text: "🔄 Otra", callback_data: "otra:" + id },
     { text: "❌ Descartar", callback_data: "no:" + id },
   ]] };
   const texto = textoFinal(datos) + "\n\n— Respondé a este mensaje con texto para reemplazar el caption.";
-  const msg = await tg(env, "sendMessage", { chat_id: env.TELEGRAM_CHAT_ID, text: texto.slice(0, 4096), reply_markup: botones });
-  datos.tg_foto_id = foto?.result?.message_id;
-  await env.DB.prepare("UPDATE propuestas SET tg_message_id = ?, datos = ? WHERE id = ?")
-    .bind(msg?.result?.message_id ?? null, JSON.stringify(datos), id).run();
+  for (const chat of await destinatarios(env, p.cliente_id, true)) {
+    const foto = await tg(env, "sendPhoto", { chat_id: chat, photo: `${env.URL_PUBLICA}/img/${id}.jpg?v=${Date.now()}`, caption: `📝 ${p.cliente_nombre}: ${p.titulo}` });
+    const msg = await tg(env, "sendMessage", { chat_id: chat, text: texto.slice(0, 4096), reply_markup: botones });
+    for (const m of [foto, msg]) {
+      if (m?.result?.message_id) {
+        await env.DB.prepare("INSERT OR REPLACE INTO mensajes_tg (chat_id, message_id, propuesta_id) VALUES (?, ?, ?)").bind(chat, m.result.message_id, id).run();
+      }
+    }
+  }
 }
 
 // ---------------------------------------------------------------- propuestas
 
-async function accionPropuesta(env, id, accion, cambios = null) {
+async function accionPropuesta(env, id, accion, cambios = null, chat = null) {
   const p = await env.DB.prepare("SELECT * FROM propuestas WHERE id = ?").bind(id).first();
   if (!p) return { error: "no existe" };
   if (!["pendiente", "error"].includes(p.estado) && accion !== "otra") {
-    await avisar(env, "Ese post ya no está pendiente (" + p.estado + ").");
-    return { error: "ya no está pendiente" };
+    if (chat) await responder(env, chat, "Ese post ya no está pendiente (" + p.estado + ").");
+    return { error: "ya no está pendiente (" + p.estado + ")" };
   }
   const datos = JSON.parse(p.datos);
   if (cambios) {
     if (cambios.caption !== undefined) datos.caption = cambios.caption;
     if (cambios.hashtags !== undefined) datos.hashtags = cambios.hashtags;
-    await env.DB.prepare("UPDATE propuestas SET datos = ?, actualizado = datetime('now') WHERE id = ?")
-      .bind(JSON.stringify(datos), id).run();
+    await env.DB.prepare("UPDATE propuestas SET datos = ?, actualizado = datetime('now') WHERE id = ?").bind(JSON.stringify(datos), id).run();
   }
 
   if (accion === "aprobar") {
@@ -197,7 +255,7 @@ async function publicar(env, id) {
   const datos = JSON.parse(p.datos);
   const resultado = JSON.parse(p.resultado || "{}");
   try {
-    if (!c.ig_user_id || !c.ig_token) throw new Error("el cliente no tiene Instagram configurado");
+    if (!c.ig_user_id || !c.ig_token) throw new Error("el cliente no tiene Instagram conectado (Clientes → Conectar Instagram)");
     const token = await descifrar(env, c.ig_token);
     if (!resultado.contenedor) {
       const r = await igPost(`${IG_API}/${c.ig_user_id}/media`, {
@@ -224,14 +282,14 @@ async function publicar(env, id) {
     await env.DB.prepare("UPDATE propuestas SET estado = 'publicada', resultado = ?, actualizado = datetime('now') WHERE id = ?")
       .bind(JSON.stringify(resultado), id).run();
     await registrar(env, c.id, "publicada", p.titulo + " " + resultado.enlace);
-    await avisar(env, `🚀 ¡Publicado en ${c.nombre}! ${resultado.enlace}`);
+    await notificar(env, c.id, `🚀 ¡Publicado en ${c.nombre}! ${resultado.enlace}`);
     return { ok: true, enlace: resultado.enlace };
   } catch (e) {
     resultado.error = String(e.message || e);
     await env.DB.prepare("UPDATE propuestas SET estado = 'error', resultado = ?, actualizado = datetime('now') WHERE id = ?")
       .bind(JSON.stringify(resultado), id).run();
     await registrar(env, c.id, "error", resultado.error);
-    await avisar(env, `⚠️ No se pudo publicar en ${c.nombre}: ${resultado.error}\nPodés reintentar desde el panel.`);
+    await notificar(env, c.id, `⚠️ No se pudo publicar en ${c.nombre}: ${resultado.error}\nPodés reintentar desde el panel.`);
     return { error: resultado.error };
   }
 }
@@ -271,13 +329,13 @@ async function apiAgente(req, env, ctx, ruta, url) {
     const b = await req.json();
     const c = await env.DB.prepare("SELECT * FROM clientes WHERE id = ?").bind(b.cliente_id).first();
     if (!c) return Response.json({ error: "no existe el cliente" }, { status: 404 });
-    const id = `${c.id}-${Date.now().toString(36)}`;
+    const id = `${c.id}-${Date.now().toString(36)}${hex(crypto.getRandomValues(new Uint8Array(4)))}`;
     await env.ARCHIVOS.put("img:" + id, base64ABytes(b.imagen_b64));
     await env.DB.prepare("INSERT INTO propuestas (id, cliente_id, tipo, titulo, datos) VALUES (?, ?, 'post', ?, ?)")
       .bind(id, c.id, b.titulo, JSON.stringify(b.datos)).run();
     await registrar(env, c.id, "propuesta", b.titulo);
     if (c.auto_publicar) {
-      await avisar(env, `🤖 ${c.nombre} en modo automático: publicando "${b.titulo}"`);
+      await notificar(env, c.id, `🤖 ${c.nombre} en modo automático: publicando "${b.titulo}"`);
       await env.DB.prepare("UPDATE propuestas SET estado = 'aprobada' WHERE id = ?").bind(id).run();
       ctx.waitUntil(publicar(env, id));
     } else {
@@ -288,7 +346,7 @@ async function apiAgente(req, env, ctx, ruta, url) {
 
   if (ruta === "aviso" && req.method === "POST") {
     const b = await req.json();
-    await avisar(env, String(b.texto).slice(0, 4000));
+    await avisarAgencia(env, String(b.texto).slice(0, 4000));
     return Response.json({ ok: true });
   }
 
@@ -297,14 +355,14 @@ async function apiAgente(req, env, ctx, ruta, url) {
 
 // ---------------------------------------------------------------- API del panel
 
-async function apiPanel(req, env, ctx, ruta, url) {
+async function apiPanel(req, env, ctx, yo, ruta, url) {
   const metodo = req.method;
   const cuerpo = async () => (metodo === "GET" ? {} : await req.json());
+  const agencia = yo.rol === "agencia";
 
   if (ruta === "salir") {
-    const token = cookie(req, "sesion");
-    if (token) await env.DB.prepare("DELETE FROM sesiones WHERE token = ?").bind(token).run();
-    return Response.json({ ok: true }, { headers: { "Set-Cookie": "sesion=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict" } });
+    await env.DB.prepare("DELETE FROM sesiones WHERE token = ?").bind(cookie(req, "sesion")).run();
+    return Response.json({ ok: true }, { headers: { "Set-Cookie": "sesion=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax" } });
   }
 
   if (ruta === "resumen") {
@@ -312,14 +370,17 @@ async function apiPanel(req, env, ctx, ruta, url) {
       "SELECT c.id, c.nombre, c.activo, c.auto_publicar, c.hora_post, c.ig_user_id IS NOT NULL AND c.ig_token IS NOT NULL AS ig_ok, " +
       "(SELECT COUNT(*) FROM propuestas p WHERE p.cliente_id = c.id AND p.estado = 'pendiente') AS pendientes, " +
       "(SELECT COUNT(*) FROM propuestas p WHERE p.cliente_id = c.id AND p.estado = 'publicada') AS publicadas " +
-      "FROM clientes c ORDER BY c.creado"
-    ).all();
-    return Response.json({ clientes: clientes.results, url: env.URL_PUBLICA });
+      "FROM clientes c WHERE ? OR c.id = ? ORDER BY c.creado"
+    ).bind(agencia ? 1 : 0, yo.cliente_id).all();
+    return Response.json({
+      yo: { nombre: yo.nombre, usuario: yo.usuario, rol: yo.rol, cliente_id: yo.cliente_id },
+      clientes: clientes.results, url: env.URL_PUBLICA, ig_oauth: !!(env.IG_APP_ID && env.IG_APP_SECRET),
+    });
   }
 
   if (ruta === "propuestas" && metodo === "GET") {
     const estado = url.searchParams.get("estado") || "pendiente";
-    const cliente = url.searchParams.get("cliente") || "";
+    const cliente = agencia ? url.searchParams.get("cliente") || "" : yo.cliente_id;
     const { results } = await env.DB.prepare(
       "SELECT p.*, c.nombre AS cliente_nombre FROM propuestas p JOIN clientes c ON c.id = p.cliente_id " +
       "WHERE (? = 'todas' OR p.estado = ?) AND (? = '' OR p.cliente_id = ?) ORDER BY p.creado DESC LIMIT 60"
@@ -329,6 +390,8 @@ async function apiPanel(req, env, ctx, ruta, url) {
 
   const accion = ruta.match(/^propuestas\/([\w-]+)\/(aprobar|descartar|otra|reintentar)$/);
   if (accion && metodo === "POST") {
+    const p = await env.DB.prepare("SELECT cliente_id FROM propuestas WHERE id = ?").bind(accion[1]).first();
+    if (!p || !puede(yo, p.cliente_id)) return SIN_PERMISO();
     const b = await cuerpo();
     if (accion[2] === "reintentar") {
       await env.DB.prepare("UPDATE propuestas SET estado = 'aprobada' WHERE id = ? AND estado = 'error'").bind(accion[1]).run();
@@ -339,47 +402,62 @@ async function apiPanel(req, env, ctx, ruta, url) {
 
   if (ruta === "generar" && metodo === "POST") {
     const b = await cuerpo();
+    if (!puede(yo, b.cliente)) return SIN_PERMISO();
     await despacharGenerar(env, b.cliente, b.pedido || "", "");
     return Response.json({ ok: true });
   }
 
   if (ruta === "clientes" && metodo === "POST") {
+    if (!agencia) return SIN_PERMISO();
     const b = await cuerpo();
     const id = String(b.id || "").toLowerCase().replace(/[^a-z0-9-]/g, "");
     if (!id || !b.nombre) return Response.json({ error: "faltan id o nombre" }, { status: 400 });
     await env.DB.prepare("INSERT INTO clientes (id, nombre) VALUES (?, ?)").bind(id, b.nombre).run();
+    await registrar(env, id, "cliente", "cliente creado");
     return Response.json({ ok: true, id });
   }
 
   const cli = ruta.match(/^clientes\/([\w-]+)$/);
-  if (cli && metodo === "GET") {
-    const c = await env.DB.prepare("SELECT * FROM clientes WHERE id = ?").bind(cli[1]).first();
-    if (!c) return Response.json({ error: "no existe" }, { status: 404 });
-    c.ig_token = c.ig_token ? "(guardado)" : "";
-    return Response.json(c);
-  }
-  if (cli && metodo === "PUT") {
-    const b = await cuerpo();
-    const campos = ["nombre", "marca", "calendario", "hora_post", "zona", "auto_publicar", "activo", "ig_user_id"];
-    for (const campo of campos) {
-      if (b[campo] === undefined) continue;
-      if (campo === "calendario") JSON.parse(b[campo]); // que sea JSON válido antes de guardarlo
-      await env.DB.prepare(`UPDATE clientes SET ${campo} = ? WHERE id = ?`).bind(b[campo], cli[1]).run();
+  if (cli) {
+    if (!puede(yo, cli[1])) return SIN_PERMISO();
+    if (metodo === "GET") {
+      const c = await env.DB.prepare("SELECT * FROM clientes WHERE id = ?").bind(cli[1]).first();
+      if (!c) return Response.json({ error: "no existe" }, { status: 404 });
+      if (c.ig_token) {
+        try {
+          c.ig_usuario = (await igGet(`${IG_API}/me`, { fields: "username", access_token: await descifrar(env, c.ig_token) })).username;
+        } catch (e) {
+          c.ig_error = String(e.message || e);
+        }
+      }
+      c.ig_token = c.ig_token ? "(guardado)" : "";
+      return Response.json(c);
     }
-    if (b.ig_token) {
-      await env.DB.prepare("UPDATE clientes SET ig_token = ?, ig_token_renovado = datetime('now') WHERE id = ?")
-        .bind(await cifrar(env, b.ig_token.trim()), cli[1]).run();
+    if (metodo === "PUT") {
+      const b = await cuerpo();
+      const campos = ["nombre", "marca", "calendario", "hora_post", "zona", "auto_publicar", "activo", "ig_user_id"];
+      for (const campo of campos) {
+        if (b[campo] === undefined) continue;
+        if (campo === "calendario") JSON.parse(b[campo]); // que sea JSON válido antes de guardarlo
+        await env.DB.prepare(`UPDATE clientes SET ${campo} = ? WHERE id = ?`).bind(b[campo], cli[1]).run();
+      }
+      if (b.ig_token) {
+        await env.DB.prepare("UPDATE clientes SET ig_token = ?, ig_token_renovado = datetime('now') WHERE id = ?")
+          .bind(await cifrar(env, b.ig_token.trim()), cli[1]).run();
+      }
+      return Response.json({ ok: true });
     }
-    return Response.json({ ok: true });
   }
 
   if (ruta === "fotos" && metodo === "GET") {
-    const { results } = await env.DB.prepare("SELECT * FROM fotos WHERE cliente_id = ? ORDER BY producto, nombre")
-      .bind(url.searchParams.get("cliente")).all();
+    const cliente = url.searchParams.get("cliente");
+    if (!puede(yo, cliente)) return SIN_PERMISO();
+    const { results } = await env.DB.prepare("SELECT * FROM fotos WHERE cliente_id = ? ORDER BY producto, nombre").bind(cliente).all();
     return Response.json(results);
   }
   if (ruta === "fotos" && metodo === "POST") {
     const form = await req.formData();
+    if (!puede(yo, form.get("cliente"))) return SIN_PERMISO();
     const archivo = form.get("archivo");
     const id = crypto.randomUUID().slice(0, 12);
     await env.ARCHIVOS.put("foto:" + id, await archivo.arrayBuffer());
@@ -388,52 +466,169 @@ async function apiPanel(req, env, ctx, ruta, url) {
     return Response.json({ ok: true, id });
   }
   const fot = ruta.match(/^fotos\/([\w-]+)$/);
-  if (fot && metodo === "GET") {
-    const f = await env.DB.prepare("SELECT tipo FROM fotos WHERE id = ?").bind(fot[1]).first();
-    const datos = await env.ARCHIVOS.get("foto:" + fot[1], "arrayBuffer");
-    if (!f || !datos) return new Response("no", { status: 404 });
-    return new Response(datos, { headers: { "Content-Type": f.tipo, "Cache-Control": "private, max-age=86400" } });
+  if (fot) {
+    const f = await env.DB.prepare("SELECT * FROM fotos WHERE id = ?").bind(fot[1]).first();
+    if (!f || !puede(yo, f.cliente_id)) return SIN_PERMISO();
+    if (metodo === "GET") {
+      const datos = await env.ARCHIVOS.get("foto:" + fot[1], "arrayBuffer");
+      if (!datos) return new Response("no", { status: 404 });
+      return new Response(datos, { headers: { "Content-Type": f.tipo, "Cache-Control": "private, max-age=86400" } });
+    }
+    if (metodo === "DELETE") {
+      await env.DB.prepare("DELETE FROM fotos WHERE id = ?").bind(fot[1]).run();
+      await env.ARCHIVOS.delete("foto:" + fot[1]);
+      return Response.json({ ok: true });
+    }
   }
-  if (fot && metodo === "DELETE") {
-    await env.DB.prepare("DELETE FROM fotos WHERE id = ?").bind(fot[1]).run();
-    await env.ARCHIVOS.delete("foto:" + fot[1]);
-    return Response.json({ ok: true });
+
+  // equipo: la agencia ve y crea usuarios de cualquier cliente (y de la agencia); cada cliente, los suyos
+  if (ruta === "usuarios" && metodo === "GET") {
+    const cliente = url.searchParams.get("cliente") || "";
+    if (cliente ? !puede(yo, cliente) : !agencia) return SIN_PERMISO();
+    const { results } = await env.DB.prepare(
+      "SELECT id, nombre, usuario, rol, cliente_id, tg_chat IS NOT NULL AS vinculado, invitacion, recibe_previas, activo FROM usuarios " +
+      "WHERE activo = 1 AND (CASE WHEN ? = '' THEN rol = 'agencia' ELSE cliente_id = ? END) ORDER BY creado"
+    ).bind(cliente, cliente).all();
+    const bot = await nombreBot(env);
+    return Response.json(results.map((u) => ({ ...u, link: u.invitacion ? `https://t.me/${bot}?start=inv_${u.invitacion}` : null, invitacion: undefined })));
+  }
+  if (ruta === "usuarios" && metodo === "POST") {
+    const b = await cuerpo();
+    const cliente = b.cliente || null;
+    if (cliente ? !puede(yo, cliente) : !agencia) return SIN_PERMISO();
+    const usuario = String(b.usuario || "").trim().toLowerCase();
+    if (!b.nombre || !usuario) return Response.json({ error: "faltan nombre o usuario" }, { status: 400 });
+    if (await env.DB.prepare("SELECT 1 FROM usuarios WHERE usuario = ?").bind(usuario).first()) {
+      return Response.json({ error: "ese usuario ya existe" }, { status: 400 });
+    }
+    const id = crypto.randomUUID().slice(0, 12);
+    await env.DB.prepare("INSERT INTO usuarios (id, nombre, usuario, rol, cliente_id, invitacion) VALUES (?, ?, ?, ?, ?, ?)")
+      .bind(id, b.nombre, usuario, cliente ? "cliente" : "agencia", cliente, nuevoCodigoInvitacion()).run();
+    await registrar(env, cliente, "usuario", `${b.nombre} invitado por ${yo.nombre}`);
+    return Response.json({ ok: true, id });
+  }
+  const usu = ruta.match(/^usuarios\/([\w-]+)(\/invitacion)?$/);
+  if (usu) {
+    const u = await env.DB.prepare("SELECT * FROM usuarios WHERE id = ?").bind(usu[1]).first();
+    if (!u || (u.cliente_id ? !puede(yo, u.cliente_id) : !agencia)) return SIN_PERMISO();
+    if (usu[2] && metodo === "POST") {
+      await env.DB.prepare("UPDATE usuarios SET invitacion = ?, tg_chat = NULL WHERE id = ?").bind(nuevoCodigoInvitacion(), u.id).run();
+      return Response.json({ ok: true });
+    }
+    if (metodo === "PUT") {
+      const b = await cuerpo();
+      if (b.recibe_previas !== undefined) await env.DB.prepare("UPDATE usuarios SET recibe_previas = ? WHERE id = ?").bind(b.recibe_previas ? 1 : 0, u.id).run();
+      return Response.json({ ok: true });
+    }
+    if (metodo === "DELETE") {
+      if (u.id === yo.id) return Response.json({ error: "no podés borrarte a vos mismo" }, { status: 400 });
+      await env.DB.prepare("UPDATE usuarios SET activo = 0, tg_chat = NULL, invitacion = NULL, usuario = usuario || '#' || id WHERE id = ?").bind(u.id).run();
+      await env.DB.prepare("DELETE FROM sesiones WHERE usuario_id = ?").bind(u.id).run();
+      return Response.json({ ok: true });
+    }
   }
 
   if (ruta === "eventos") {
-    const { results } = await env.DB.prepare("SELECT * FROM eventos ORDER BY id DESC LIMIT 100").all();
+    const { results } = await env.DB.prepare("SELECT * FROM eventos WHERE ? OR cliente_id = ? ORDER BY id DESC LIMIT 100")
+      .bind(agencia ? 1 : 0, yo.cliente_id).all();
     return Response.json(results);
   }
 
   return Response.json({ error: "no existe" }, { status: 404 });
 }
 
+function nuevoCodigoInvitacion() {
+  return hex(crypto.getRandomValues(new Uint8Array(12)));
+}
+
+let botCache = null;
+async function nombreBot(env) {
+  if (!botCache) botCache = (await tg(env, "getMe", {}))?.result?.username;
+  return botCache;
+}
+
+// ---------------------------------------------------------------- Conectar Instagram (OAuth de Instagram)
+
+async function igConectar(env, yo, url) {
+  const cliente = url.searchParams.get("cliente");
+  if (!yo) return Response.redirect(`${env.URL_PUBLICA}/panel`, 302);
+  if (!puede(yo, cliente)) return new Response("No tenés acceso a ese cliente", { status: 403 });
+  if (!env.IG_APP_ID || !env.IG_APP_SECRET) return new Response("Falta configurar la app de Instagram en el hub (IG_APP_ID / IG_APP_SECRET).", { status: 500 });
+  const estado = nuevoCodigoInvitacion();
+  await env.ARCHIVOS.put("igestado:" + estado, cliente, { expirationTtl: 900 });
+  const destino = new URL("https://www.instagram.com/oauth/authorize");
+  destino.search = new URLSearchParams({
+    client_id: env.IG_APP_ID, redirect_uri: `${env.URL_PUBLICA}/ig/volver`, response_type: "code", scope: IG_PERMISOS, state: estado,
+  });
+  return Response.redirect(destino.toString(), 302);
+}
+
+async function igVolver(env, url) {
+  const volver = (msg) => Response.redirect(`${env.URL_PUBLICA}/panel#ig=${encodeURIComponent(msg)}`, 302);
+  const estado = url.searchParams.get("state") || "";
+  const cliente = await env.ARCHIVOS.get("igestado:" + estado);
+  if (!cliente) return volver("La conexión venció o no es válida. Probá de nuevo.");
+  await env.ARCHIVOS.delete("igestado:" + estado);
+  if (url.searchParams.get("error")) return volver("Cancelaste la conexión con Instagram.");
+  try {
+    const corto = await fetch("https://api.instagram.com/oauth/access_token", {
+      method: "POST",
+      body: new URLSearchParams({
+        client_id: env.IG_APP_ID, client_secret: env.IG_APP_SECRET, grant_type: "authorization_code",
+        redirect_uri: `${env.URL_PUBLICA}/ig/volver`, code: (url.searchParams.get("code") || "").replace(/#_$/, ""),
+      }),
+    }).then((r) => r.json());
+    if (!corto.access_token) throw new Error(corto.error_message || JSON.stringify(corto));
+    const largo = await igGet("https://graph.instagram.com/access_token", {
+      grant_type: "ig_exchange_token", client_secret: env.IG_APP_SECRET, access_token: corto.access_token,
+    });
+    const me = await igGet(`${IG_API}/me`, { fields: "user_id,username", access_token: largo.access_token });
+    await env.DB.prepare("UPDATE clientes SET ig_user_id = ?, ig_token = ?, ig_token_renovado = datetime('now') WHERE id = ?")
+      .bind(String(me.user_id), await cifrar(env, largo.access_token), cliente).run();
+    await registrar(env, cliente, "instagram", "conectado @" + me.username);
+    return volver("Instagram conectado: @" + me.username);
+  } catch (e) {
+    await registrar(env, cliente, "error", "conectar Instagram: " + e.message);
+    return volver("No se pudo conectar Instagram: " + e.message);
+  }
+}
+
 // ---------------------------------------------------------------- login del panel
 
-async function enviarCodigo(env) {
-  const codigo = String(100000 + (crypto.getRandomValues(new Uint32Array(1))[0] % 900000));
-  await env.DB.prepare("DELETE FROM codigos").run();
-  await env.DB.prepare("INSERT INTO codigos (codigo, vence) VALUES (?, datetime('now', '+10 minutes'))").bind(codigo).run();
-  await avisar(env, `🔐 Código para entrar al panel: ${codigo}\n(vence en 10 minutos; si no lo pediste vos, ignoralo)`);
+async function enviarCodigo(req, env) {
+  const { usuario } = await req.json().catch(() => ({}));
+  const u = await env.DB.prepare("SELECT * FROM usuarios WHERE usuario = ? AND activo = 1 AND tg_chat IS NOT NULL")
+    .bind(String(usuario || "").trim().toLowerCase()).first();
+  // siempre responde lo mismo, para no revelar qué usuarios existen
+  if (u) {
+    const codigo = String(100000 + (crypto.getRandomValues(new Uint32Array(1))[0] % 900000));
+    await env.DB.prepare("INSERT OR REPLACE INTO codigos (usuario_id, codigo, vence) VALUES (?, ?, datetime('now', '+10 minutes'))").bind(u.id, codigo).run();
+    await responder(env, u.tg_chat, `🔐 Código para entrar al panel: ${codigo}\n(vence en 10 minutos; si no lo pediste vos, ignoralo)`);
+  }
   return Response.json({ ok: true });
 }
 
 async function login(req, env) {
-  const { codigo } = await req.json();
-  const ok = await env.DB.prepare("SELECT 1 FROM codigos WHERE codigo = ? AND vence > datetime('now')").bind(String(codigo || "")).first();
-  if (!ok) return Response.json({ error: "código incorrecto o vencido" }, { status: 401 });
-  await env.DB.prepare("DELETE FROM codigos").run();
+  const { usuario, codigo } = await req.json();
+  const u = await env.DB.prepare(
+    "SELECT u.id FROM usuarios u JOIN codigos c ON c.usuario_id = u.id WHERE u.usuario = ? AND u.activo = 1 AND c.codigo = ? AND c.vence > datetime('now')"
+  ).bind(String(usuario || "").trim().toLowerCase(), String(codigo || "").trim()).first();
+  if (!u) return Response.json({ error: "código incorrecto o vencido" }, { status: 401 });
+  await env.DB.prepare("DELETE FROM codigos WHERE usuario_id = ?").bind(u.id).run();
   const token = crypto.randomUUID() + crypto.randomUUID();
-  await env.DB.prepare("INSERT INTO sesiones (token, vence) VALUES (?, datetime('now', '+30 days'))").bind(token).run();
+  await env.DB.prepare("INSERT INTO sesiones (token, usuario_id, vence) VALUES (?, ?, datetime('now', '+30 days'))").bind(token, u.id).run();
+  // Lax (no Strict) para que la sesión siga al volver de Instagram en "Conectar Instagram"
   return Response.json({ ok: true }, {
-    headers: { "Set-Cookie": `sesion=${token}; Path=/; Max-Age=2592000; HttpOnly; Secure; SameSite=Strict` },
+    headers: { "Set-Cookie": `sesion=${token}; Path=/; Max-Age=2592000; HttpOnly; Secure; SameSite=Lax` },
   });
 }
 
-async function sesionValida(req, env) {
+async function usuarioDeSesion(req, env) {
   const token = cookie(req, "sesion");
-  if (!token) return false;
-  return !!(await env.DB.prepare("SELECT 1 FROM sesiones WHERE token = ? AND vence > datetime('now')").bind(token).first());
+  if (!token) return null;
+  return env.DB.prepare(
+    "SELECT u.* FROM sesiones s JOIN usuarios u ON u.id = s.usuario_id WHERE s.token = ? AND s.vence > datetime('now') AND u.activo = 1"
+  ).bind(token).first();
 }
 
 function cookie(req, nombre) {
@@ -474,7 +669,7 @@ async function tareasProgramadas(env) {
         .bind(await cifrar(env, r.access_token), c.id).run();
       await registrar(env, c.id, "token", "token de Instagram renovado");
     } catch (e) {
-      await avisar(env, `⚠️ No pude renovar el token de Instagram de ${c.nombre}: ${e.message}`);
+      await notificar(env, c.id, `⚠️ No pude renovar el token de Instagram de ${c.nombre}: ${e.message}\nVolvé a conectarlo desde el panel.`);
     }
   }
 
@@ -499,7 +694,7 @@ async function despacharGenerar(env, cliente, pedido, producto) {
   if (!r.ok) {
     const error = `GitHub no aceptó la generación (${r.status}): ${(await r.text()).slice(0, 300)}`;
     await registrar(env, cliente, "error", error);
-    await avisar(env, "⚠️ " + error);
+    await avisarAgencia(env, "⚠️ " + error);
   }
 }
 
@@ -512,10 +707,6 @@ async function tg(env, metodo, datos) {
   const j = await r.json();
   if (!j.ok) console.log(`Telegram ${metodo}:`, JSON.stringify(j));
   return j;
-}
-
-function avisar(env, texto) {
-  return tg(env, "sendMessage", { chat_id: env.TELEGRAM_CHAT_ID, text: texto });
 }
 
 function registrar(env, cliente, tipo, detalle) {

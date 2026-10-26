@@ -57,8 +57,10 @@
 <body>
 <div id="login" class="tarjeta" hidden>
   <h2>Panel de la agencia</h2>
-  <p>Te mandamos un código a Telegram para entrar.</p>
-  <button class="b prim" id="pedirCodigo">Enviarme el código</button>
+  <p>Ingresá tu usuario y te mandamos un código a tu Telegram.</p>
+  <label for="usuario">Usuario</label>
+  <input id="usuario" autocomplete="username" autocapitalize="none">
+  <p><button class="b prim" id="pedirCodigo">Enviarme el código</button></p>
   <div id="pasoCodigo" hidden>
     <label for="codigo">Código</label>
     <input id="codigo" inputmode="numeric" autocomplete="one-time-code">
@@ -78,6 +80,7 @@
       <button data-vista="actividad">Actividad</button>
     </nav>
     <span style="flex:1"></span>
+    <span id="quien" style="color:var(--suave);font-size:13px"></span>
     <button class="b" id="salir">Salir</button>
   </header>
   <main id="vista"></main>
@@ -88,6 +91,8 @@
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (t) => String(t ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 let clientes = [];
+let yo = null;
+let igOauth = false;
 
 async function api(ruta, opciones = {}) {
   const r = await fetch("/api/panel/" + ruta, {
@@ -116,13 +121,18 @@ async function conBoton(boton, fn) {
 
 // ---------- login
 function mostrarLogin() { $("#app").hidden = true; $("#login").hidden = false; }
+try { $("#usuario").value = localStorage.getItem("usuario") || ""; } catch {}
 $("#pedirCodigo").onclick = () => conBoton($("#pedirCodigo"), async () => {
-  await fetch("/api/panel/codigo", { method: "POST" });
+  const usuario = $("#usuario").value.trim();
+  if (!usuario) return aviso("Escribí tu usuario");
+  try { localStorage.setItem("usuario", usuario); } catch {}
+  await fetch("/api/panel/codigo", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ usuario }) });
   $("#pasoCodigo").hidden = false;
+  $("#errorLogin").textContent = "Si el usuario existe y tiene Telegram vinculado, te llegó el código.";
   $("#codigo").focus();
 });
 $("#entrar").onclick = () => conBoton($("#entrar"), async () => {
-  const r = await fetch("/api/panel/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ codigo: $("#codigo").value.trim() }) });
+  const r = await fetch("/api/panel/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ usuario: $("#usuario").value.trim(), codigo: $("#codigo").value.trim() }) });
   if (!r.ok) { $("#errorLogin").textContent = (await r.json()).error; return; }
   iniciar();
 });
@@ -139,10 +149,15 @@ function ir(vista) {
 
 async function iniciar() {
   try {
-    clientes = (await api("resumen")).clientes;
+    const r = await api("resumen");
+    clientes = r.clientes; yo = r.yo; igOauth = r.ig_oauth;
   } catch { return; }
   $("#login").hidden = true;
   $("#app").hidden = false;
+  $("#quien").textContent = yo.nombre;
+  $('nav [data-vista="clientes"]').textContent = yo.rol === "agencia" ? "Clientes" : "Mi cuenta";
+  const ig = decodeURIComponent((location.hash.match(/ig=([^&]+)/) || [])[1] || "");
+  if (ig) { aviso(ig); history.replaceState(null, "", location.pathname); try { localStorage.setItem("vista", "clientes"); } catch {} }
   let vista = "propuestas";
   try { vista = localStorage.getItem("vista") || vista; } catch {}
   ir(vista);
@@ -154,7 +169,7 @@ const opcionesClientes = (sel = "") => clientes.map((c) => `<option value="${esc
 async function verPropuestas(estado) {
   const v = $("#vista");
   v.innerHTML = `<div class="fila" style="margin-bottom:16px">
-      <select id="filtroCliente" style="max-width:260px"><option value="">Todos los clientes</option>${opcionesClientes()}</select>
+      <select id="filtroCliente" style="max-width:260px" ${yo.rol === "agencia" ? "" : "hidden"}><option value="">Todos los clientes</option>${opcionesClientes()}</select>
       ${estado === "todas" ? "" : '<span class="meta" style="color:var(--suave)">Posts esperando tu aprobación</span>'}
     </div><div id="lista" class="grilla"></div>`;
   $("#filtroCliente").onchange = () => cargar();
@@ -209,13 +224,16 @@ function verGenerar() {
 // ---------- clientes
 async function verClientes() {
   clientes = (await api("resumen")).clientes;
+  if (yo.rol !== "agencia") return editarCliente(yo.cliente_id);
   $("#vista").innerHTML = `<div class="tarjeta"><h2>Clientes</h2><table><thead><tr><th>Cliente</th><th>Instagram</th><th>Hora</th><th>Modo</th><th>Pendientes</th><th>Publicados</th><th></th></tr></thead><tbody>${
     clientes.map((c) => `<tr><td><b>${esc(c.nombre)}</b><br><span class="chip">${esc(c.id)}</span> ${c.activo ? "" : '<span class="chip">pausado</span>'}</td>
       <td>${c.ig_ok ? "✅" : "⚠️ falta"}</td><td>${esc(c.hora_post)}</td><td>${c.auto_publicar ? "automático" : "con aprobación"}</td>
       <td>${c.pendientes}</td><td>${c.publicadas}</td><td><button class="b" data-c="${esc(c.id)}">Editar</button></td></tr>`).join("")
   }</tbody></table></div>
   <div class="tarjeta" style="max-width:620px"><h2>Nuevo cliente</h2>
-    <div class="fila"><input id="nId" placeholder="id corto (ej. panaderia-sol)" style="flex:1"><input id="nNombre" placeholder="Nombre" style="flex:1"><button class="b prim" id="nBoton">Crear</button></div></div>`;
+    <div class="fila"><input id="nId" placeholder="id corto (ej. panaderia-sol)" style="flex:1"><input id="nNombre" placeholder="Nombre" style="flex:1"><button class="b prim" id="nBoton">Crear</button></div></div>
+  <div class="tarjeta"><h2>Equipo de la agencia</h2><div id="equipo"></div></div>`;
+  verEquipo($("#equipo"), "");
   $("#vista").querySelectorAll("[data-c]").forEach((b) => (b.onclick = () => editarCliente(b.dataset.c)));
   $("#nBoton").onclick = () => conBoton($("#nBoton"), async () => {
     const r = await api("clientes", { method: "POST", body: { id: $("#nId").value, nombre: $("#nNombre").value } });
@@ -225,7 +243,7 @@ async function verClientes() {
 
 async function editarCliente(id) {
   const c = await api("clientes/" + id);
-  $("#vista").innerHTML = `<p><button class="b" id="volver">← Clientes</button></p>
+  $("#vista").innerHTML = `<p ${yo.rol === "agencia" ? "" : "hidden"}><button class="b" id="volver">← Clientes</button></p>
   <div class="tarjeta"><h2>${esc(c.nombre)}</h2>
     <div class="grilla">
       <div><label>Nombre</label><input id="cNombre" value="${esc(c.nombre)}"></div>
@@ -235,10 +253,13 @@ async function editarCliente(id) {
       <div><label>Estado</label><select id="cActivo"><option value="1">Activo</option><option value="0" ${c.activo ? "" : "selected"}>Pausado</option></select></div>
     </div>
     <h3>Instagram</h3>
+    <p>${c.ig_usuario ? `✅ Conectado como <b>@${esc(c.ig_usuario)}</b>` : c.ig_error ? `⚠️ La conexión falló: ${esc(c.ig_error)}` : "⚠️ Todavía no está conectado"}</p>
+    ${igOauth ? `<p><a class="b prim" style="text-decoration:none;display:inline-block" href="/ig/conectar?cliente=${encodeURIComponent(id)}">${c.ig_usuario ? "Reconectar" : "Conectar"} Instagram</a></p>` : ""}
+    <details><summary style="cursor:pointer;color:var(--suave);font-size:13px">Cargar el token a mano</summary>
     <div class="grilla">
       <div><label>IG user id</label><input id="cIgUser" value="${esc(c.ig_user_id || "")}"></div>
       <div><label>Token de Instagram ${c.ig_token ? "(ya hay uno guardado; pegá otro solo para reemplazarlo)" : ""}</label><input id="cIgToken" type="password" autocomplete="off"></div>
-    </div>
+    </div></details>
     <h3>Marca (quién es, qué vende, tono, productos, cómo escribir)</h3>
     <textarea id="cMarca" class="grande">${esc(c.marca)}</textarea>
     <h3>Calendario semanal (JSON)</h3>
@@ -249,7 +270,11 @@ async function editarCliente(id) {
     <p class="meta" style="color:var(--suave)">El producto es lo que escribís en /nuevo (ej. "sofi"). Dejalo vacío para fotos propias sueltas (días con foto_propia).</p>
     <div class="fila"><input id="fProducto" placeholder="producto" style="max-width:220px"><input id="fArchivos" type="file" accept="image/*" multiple style="max-width:320px"><button class="b prim" id="fSubir">Subir</button></div>
     <div id="fotos"></div>
-  </div>`;
+  </div>
+  <div class="tarjeta"><h2>Equipo</h2>
+    <p class="meta" style="color:var(--suave)">Las personas que pueden entrar a este panel y aprobar los posts por Telegram.</p>
+    <div id="equipo"></div></div>`;
+  verEquipo($("#equipo"), id);
   $("#volver").onclick = verClientes;
   $("#cGuardar").onclick = () => conBoton($("#cGuardar"), async () => {
     let cal;
@@ -284,6 +309,40 @@ async function editarCliente(id) {
     })));
   }
   cargarFotos();
+}
+
+// ---------- equipo
+async function verEquipo(el, cliente) {
+  const usuarios = await api("usuarios?cliente=" + encodeURIComponent(cliente));
+  el.innerHTML = `<table><thead><tr><th>Nombre</th><th>Usuario</th><th>Telegram</th><th>Recibe posts</th><th></th></tr></thead><tbody>${
+    usuarios.map((u) => `<tr><td>${esc(u.nombre)}</td><td>${esc(u.usuario)}</td>
+      <td>${u.vinculado ? "✅ vinculado" : u.link ? `<button class="b" data-copiar="${esc(u.link)}">Copiar invitación</button>` : "—"}
+        ${u.vinculado ? `<button class="b" data-reinv="${esc(u.id)}" title="Si cambió de Telegram">Nueva invitación</button>` : ""}</td>
+      <td><input type="checkbox" data-previas="${esc(u.id)}" ${u.recibe_previas ? "checked" : ""} style="width:auto"></td>
+      <td>${u.usuario === yo.usuario ? "" : `<button class="b peligro" data-borrar="${esc(u.id)}">Quitar</button>`}</td></tr>`).join("")
+  }</tbody></table>
+  <h3>Invitar a alguien</h3>
+  <div class="fila"><input class="iNombre" placeholder="Nombre" style="flex:1"><input class="iUsuario" placeholder="Usuario para entrar (ej. su email)" style="flex:1" autocapitalize="none"><button class="b prim iBoton">Invitar</button></div>
+  <p class="meta" style="color:var(--suave)">Le pasás el link de invitación (WhatsApp, mail…). Lo abre, toca "Iniciar" en Telegram y ya puede entrar al panel con su usuario.</p>`;
+  el.querySelectorAll("[data-copiar]").forEach((b) => (b.onclick = async () => {
+    try { await navigator.clipboard.writeText(b.dataset.copiar); aviso("Link copiado"); } catch { prompt("Copiá el link:", b.dataset.copiar); }
+  }));
+  el.querySelectorAll("[data-reinv]").forEach((b) => (b.onclick = () => conBoton(b, async () => {
+    if (!confirm("Se desvincula su Telegram actual y se genera un link nuevo. ¿Seguir?")) return;
+    await api(`usuarios/${b.dataset.reinv}/invitacion`, { method: "POST", body: {} });
+    verEquipo(el, cliente);
+  })));
+  el.querySelectorAll("[data-previas]").forEach((c) => (c.onchange = () => api("usuarios/" + c.dataset.previas, { method: "PUT", body: { recibe_previas: c.checked } }).then(() => aviso("Guardado"))));
+  el.querySelectorAll("[data-borrar]").forEach((b) => (b.onclick = () => conBoton(b, async () => {
+    if (!confirm("¿Quitarle el acceso?")) return;
+    await api("usuarios/" + b.dataset.borrar, { method: "DELETE" });
+    verEquipo(el, cliente);
+  })));
+  $(".iBoton", el).onclick = () => conBoton($(".iBoton", el), async () => {
+    await api("usuarios", { method: "POST", body: { cliente: cliente || null, nombre: $(".iNombre", el).value, usuario: $(".iUsuario", el).value } });
+    aviso("Listo: copiá el link de invitación y pasáselo");
+    verEquipo(el, cliente);
+  });
 }
 
 // ---------- actividad
