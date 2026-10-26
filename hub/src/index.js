@@ -11,8 +11,14 @@
 // Secretos: TELEGRAM_TOKEN, GH_TOKEN, CLAVE_CIFRADO, IG_APP_SECRET (opcional, para "Conectar Instagram").
 
 import PANEL from "./panel.html";
+import {
+  IG_API, tg, responder, destinatarios, notificar, avisarAgencia, registrar, igGet, igPost, esperar, hex,
+  base64ABytes, claveAgente, cifrar, descifrar, horaLocal, textoFinal,
+} from "./comun.js";
+import {
+  sincronizarSiguiente, proponerRespuestas, vistaPreviaRespuesta, ejecutarRespuesta, aprendizajes, informesSemanales, generarInforme,
+} from "./instagram.js";
 
-const IG_API = "https://graph.instagram.com/v23.0";
 const IG_PERMISOS = "instagram_business_basic,instagram_business_content_publish,instagram_business_manage_comments,instagram_business_manage_insights";
 
 export default {
@@ -74,28 +80,6 @@ function puede(yo, clienteId) {
 }
 
 const SIN_PERMISO = () => Response.json({ error: "no tenés acceso a ese cliente" }, { status: 403 });
-
-// Quiénes reciben los avisos de un cliente: la agencia y los usuarios de ese cliente, con Telegram vinculado.
-async function destinatarios(env, clienteId, soloPrevias = false) {
-  const { results } = await env.DB.prepare(
-    "SELECT tg_chat FROM usuarios WHERE activo = 1 AND tg_chat IS NOT NULL AND (rol = 'agencia' OR cliente_id = ?)" +
-    (soloPrevias ? " AND recibe_previas = 1" : "")
-  ).bind(clienteId).all();
-  return results.map((u) => u.tg_chat);
-}
-
-async function notificar(env, clienteId, texto) {
-  for (const chat of await destinatarios(env, clienteId)) await tg(env, "sendMessage", { chat_id: chat, text: texto });
-}
-
-async function avisarAgencia(env, texto) {
-  const { results } = await env.DB.prepare("SELECT tg_chat FROM usuarios WHERE rol = 'agencia' AND activo = 1 AND tg_chat IS NOT NULL").all();
-  for (const u of results) await tg(env, "sendMessage", { chat_id: u.tg_chat, text: texto });
-}
-
-function responder(env, chat, texto) {
-  return tg(env, "sendMessage", { chat_id: chat, text: texto });
-}
 
 // ---------------------------------------------------------------- Telegram
 
@@ -179,8 +163,13 @@ async function comandoTelegram(env, yo, chat, texto, mensaje) {
   if (!p || !puede(yo, p.cliente_id)) return responder(env, chat, "No hay posts pendientes. Mandá /nuevo para generar uno.");
   if (p.estado !== "pendiente") return responder(env, chat, "Ese post ya no está pendiente (" + p.estado + ").");
   const datos = JSON.parse(p.datos);
-  datos.caption = texto;
-  datos.hashtags = "";
+  if (p.tipo === "respuesta") {
+    datos.respuesta = texto;
+    datos.accion = "responder";
+  } else {
+    datos.caption = texto;
+    datos.hashtags = "";
+  }
   await env.DB.prepare("UPDATE propuestas SET datos = ?, actualizado = datetime('now') WHERE id = ?").bind(JSON.stringify(datos), p.id).run();
   return enviarVistaPrevia(env, p.id);
 }
@@ -189,6 +178,7 @@ async function enviarVistaPrevia(env, id) {
   const p = await env.DB.prepare(
     "SELECT p.*, c.nombre AS cliente_nombre FROM propuestas p JOIN clientes c ON c.id = p.cliente_id WHERE p.id = ?"
   ).bind(id).first();
+  if (p.tipo === "respuesta") return vistaPreviaRespuesta(env, id);
   const datos = JSON.parse(p.datos);
   const botones = { inline_keyboard: [[
     { text: "✅ Publicar", callback_data: "ok:" + id },
@@ -220,26 +210,39 @@ async function accionPropuesta(env, id, accion, cambios = null, chat = null) {
   if (cambios) {
     if (cambios.caption !== undefined) datos.caption = cambios.caption;
     if (cambios.hashtags !== undefined) datos.hashtags = cambios.hashtags;
+    if (cambios.respuesta !== undefined) datos.respuesta = cambios.respuesta;
     await env.DB.prepare("UPDATE propuestas SET datos = ?, actualizado = datetime('now') WHERE id = ?").bind(JSON.stringify(datos), id).run();
   }
 
   if (accion === "aprobar") {
     await env.DB.prepare("UPDATE propuestas SET estado = 'aprobada', actualizado = datetime('now') WHERE id = ?").bind(id).run();
     await registrar(env, p.cliente_id, "aprobada", p.titulo);
-    return publicar(env, id);
+    return ejecutar(env, id);
   }
   if (accion === "descartar") {
     await env.DB.prepare("UPDATE propuestas SET estado = 'descartada', actualizado = datetime('now') WHERE id = ?").bind(id).run();
+    if (p.tipo === "respuesta") await env.DB.prepare("UPDATE comentarios SET estado = 'ignorado' WHERE id = ?").bind(datos.comentario_id).run();
     return { ok: true };
   }
   if (accion === "otra") {
     if (p.estado === "pendiente") {
       await env.DB.prepare("UPDATE propuestas SET estado = 'descartada', actualizado = datetime('now') WHERE id = ?").bind(id).run();
     }
+    if (p.tipo === "respuesta") { // el cron propone otra respuesta en unos minutos
+      await env.DB.prepare("UPDATE comentarios SET estado = 'nuevo' WHERE id = ?").bind(datos.comentario_id).run();
+      if (chat) await responder(env, chat, "🔄 En unos minutos te propongo otra respuesta.");
+      return { ok: true, nota: "En unos minutos llega otra respuesta" };
+    }
     await despacharGenerar(env, p.cliente_id, datos.pedido || "", datos.producto || "");
     return { ok: true };
   }
   return { error: "acción desconocida" };
+}
+
+// Ejecuta una propuesta aprobada según su tipo.
+function ejecutar(env, id) {
+  return env.DB.prepare("SELECT tipo FROM propuestas WHERE id = ?").bind(id).first()
+    .then((p) => (p?.tipo === "respuesta" ? ejecutarRespuesta(env, id) : publicar(env, id)));
 }
 
 // Publica una propuesta aprobada. Si Instagram todavía está procesando la imagen, queda "aprobada"
@@ -298,10 +301,6 @@ function guardarResultado(env, id, resultado) {
   return env.DB.prepare("UPDATE propuestas SET resultado = ? WHERE id = ?").bind(JSON.stringify(resultado), id).run();
 }
 
-function textoFinal(datos) {
-  return `${(datos.caption || "").trim()}\n\n${(datos.hashtags || "").trim()}`.trim();
-}
-
 // ---------------------------------------------------------------- API para el generador (GitHub Actions)
 
 async function apiAgente(req, env, ctx, ruta, url) {
@@ -314,7 +313,7 @@ async function apiAgente(req, env, ctx, ruta, url) {
       "SELECT titulo, json_extract(datos, '$.foto_id') AS foto_id, json_extract(datos, '$.producto') AS producto, actualizado " +
       "FROM propuestas WHERE cliente_id = ? AND estado = 'publicada' ORDER BY actualizado"
     ).bind(id).all();
-    return Response.json({ cliente: c, fotos: fotos.results, historial: historial.results });
+    return Response.json({ cliente: c, fotos: fotos.results, historial: historial.results, aprendizajes: await aprendizajes(env, id) });
   }
 
   const foto = ruta.match(/^foto\/([\w-]+)$/);
@@ -395,7 +394,7 @@ async function apiPanel(req, env, ctx, yo, ruta, url) {
     const b = await cuerpo();
     if (accion[2] === "reintentar") {
       await env.DB.prepare("UPDATE propuestas SET estado = 'aprobada' WHERE id = ? AND estado = 'error'").bind(accion[1]).run();
-      return Response.json(await publicar(env, accion[1]));
+      return Response.json(await ejecutar(env, accion[1]));
     }
     return Response.json(await accionPropuesta(env, accion[1], accion[2], b));
   }
@@ -528,6 +527,31 @@ async function apiPanel(req, env, ctx, yo, ruta, url) {
     }
   }
 
+  if (ruta === "resultados" && metodo === "GET") {
+    const cliente = url.searchParams.get("cliente") || (agencia ? "" : yo.cliente_id);
+    if (!cliente || !puede(yo, cliente)) return SIN_PERMISO();
+    const posts = (await env.DB.prepare(
+      "SELECT p.*, pr.titulo FROM publicaciones_ig p LEFT JOIN propuestas pr ON pr.id = p.propuesta_id WHERE p.cliente_id = ? ORDER BY p.fecha DESC LIMIT 60"
+    ).bind(cliente).all()).results;
+    const informe = await env.DB.prepare("SELECT * FROM informes WHERE cliente_id = ? ORDER BY id DESC LIMIT 1").bind(cliente).first();
+    return Response.json({ posts, informe });
+  }
+  if (ruta === "informes" && metodo === "POST") {
+    const b = await cuerpo();
+    if (!puede(yo, b.cliente)) return SIN_PERMISO();
+    const c = await env.DB.prepare("SELECT * FROM clientes WHERE id = ?").bind(b.cliente).first();
+    return Response.json({ ok: true, texto: await generarInforme(env, c) });
+  }
+  if (ruta === "comentarios" && metodo === "GET") {
+    const cliente = url.searchParams.get("cliente") || "";
+    if (cliente ? !puede(yo, cliente) : !agencia) return SIN_PERMISO();
+    const { results } = await env.DB.prepare(
+      "SELECT co.*, cl.nombre AS cliente_nombre, p.enlace FROM comentarios co JOIN clientes cl ON cl.id = co.cliente_id " +
+      "LEFT JOIN publicaciones_ig p ON p.media_id = co.media_id WHERE (? = '' OR co.cliente_id = ?) ORDER BY co.fecha DESC LIMIT 100"
+    ).bind(cliente, cliente).all();
+    return Response.json(results);
+  }
+
   if (ruta === "eventos") {
     const { results } = await env.DB.prepare("SELECT * FROM eventos WHERE ? OR cliente_id = ? ORDER BY id DESC LIMIT 100")
       .bind(agencia ? 1 : 0, yo.cliente_id).all();
@@ -653,8 +677,8 @@ async function tareasProgramadas(env) {
   await env.DB.prepare(
     "UPDATE propuestas SET estado = 'aprobada' WHERE estado = 'publicando' AND actualizado < datetime('now', '-15 minutes')"
   ).run();
-  const { results: aprobadas } = await env.DB.prepare("SELECT id FROM propuestas WHERE estado = 'aprobada'").all();
-  for (const p of aprobadas) await publicar(env, p.id);
+  const { results: aprobadas } = await env.DB.prepare("SELECT id FROM propuestas WHERE estado = 'aprobada' ORDER BY actualizado LIMIT 3").all();
+  for (const p of aprobadas) await ejecutar(env, p.id);
 
   // 3. tokens de Instagram: se renuevan cada 30 días (vencen a los 60)
   const { results: vencer } = await env.DB.prepare(
@@ -673,14 +697,12 @@ async function tareasProgramadas(env) {
     }
   }
 
-  await env.DB.prepare("DELETE FROM sesiones WHERE vence < datetime('now')").run();
-}
+  // 4. estudio de contenido y reputación: métricas y comentarios de un cliente, respuestas propuestas, informe semanal
+  await sincronizarSiguiente(env);
+  await proponerRespuestas(env);
+  await informesSemanales(env);
 
-function horaLocal(zona) {
-  const partes = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
-    timeZone: zona, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
-  }).formatToParts(new Date()).map((p) => [p.type, p.value]));
-  return { fecha: `${partes.year}-${partes.month}-${partes.day}`, hora: `${partes.hour}:${partes.minute}` };
+  await env.DB.prepare("DELETE FROM sesiones WHERE vence < datetime('now')").run();
 }
 
 // ---------------------------------------------------------------- GitHub (generador)
@@ -698,72 +720,3 @@ async function despacharGenerar(env, cliente, pedido, producto) {
   }
 }
 
-// ---------------------------------------------------------------- utilidades
-
-async function tg(env, metodo, datos) {
-  const r = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/${metodo}`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(datos),
-  });
-  const j = await r.json();
-  if (!j.ok) console.log(`Telegram ${metodo}:`, JSON.stringify(j));
-  return j;
-}
-
-function registrar(env, cliente, tipo, detalle) {
-  return env.DB.prepare("INSERT INTO eventos (cliente_id, tipo, detalle) VALUES (?, ?, ?)").bind(cliente, tipo, String(detalle).slice(0, 1000)).run();
-}
-
-async function igPost(url, datos) {
-  const r = await fetch(url, { method: "POST", body: new URLSearchParams(datos) });
-  const j = await r.json();
-  if (!r.ok || j.error) throw new Error(j.error?.message || JSON.stringify(j));
-  return j;
-}
-
-async function igGet(url, params) {
-  const r = await fetch(url + "?" + new URLSearchParams(params));
-  const j = await r.json();
-  if (!r.ok || j.error) throw new Error(j.error?.message || JSON.stringify(j));
-  return j;
-}
-
-const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
-
-// La clave que comparten Telegram (secret_token), el generador y el hub: sha256 del token del bot.
-async function claveAgente(env) {
-  return hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(env.TELEGRAM_TOKEN)));
-}
-
-function hex(buf) {
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-function base64ABytes(b64) {
-  return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-}
-
-function bytesABase64(bytes) {
-  let s = "";
-  for (const b of bytes) s += String.fromCharCode(b);
-  return btoa(s);
-}
-
-// Los tokens de los clientes se guardan cifrados (AES-GCM) con CLAVE_CIFRADO.
-async function claveCifrado(env) {
-  return crypto.subtle.importKey("raw", base64ABytes(env.CLAVE_CIFRADO), "AES-GCM", false, ["encrypt", "decrypt"]);
-}
-
-async function cifrar(env, texto) {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const datos = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await claveCifrado(env), new TextEncoder().encode(texto)));
-  const todo = new Uint8Array(iv.length + datos.length);
-  todo.set(iv);
-  todo.set(datos, iv.length);
-  return "v1:" + bytesABase64(todo);
-}
-
-async function descifrar(env, guardado) {
-  const todo = base64ABytes(guardado.slice(3));
-  const datos = await crypto.subtle.decrypt({ name: "AES-GCM", iv: todo.slice(0, 12) }, await claveCifrado(env), todo.slice(12));
-  return new TextDecoder().decode(datos);
-}

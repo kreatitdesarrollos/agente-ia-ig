@@ -49,6 +49,20 @@ def foto_menos_usada(fotos, historial):
     return min(fotos, key=lambda f: ultimo.get(f["id"], -1), default=None)
 
 
+def texto_aprendizajes(a):
+    """Lo que funcionó y lo que no en Instagram, para que Gemini lo tenga en cuenta (sin copiar textos)."""
+    if not a or not a.get("mejores"):
+        return ""
+    linea = lambda p: '- "{}" (alcance {}, interacciones {}, guardados {})'.format(
+        p["texto"], p.get("alcance") or "?", p.get("interacciones") or "?", p.get("guardados") or "?")
+    texto = "\n\nLo que MEJOR funcionó en Instagram últimamente:\n" + "\n".join(map(linea, a["mejores"]))
+    if a.get("peores"):
+        texto += "\nLo que PEOR funcionó:\n" + "\n".join(map(linea, a["peores"]))
+    if a.get("recomendaciones"):
+        texto += "\nÚltimo informe semanal:\n" + a["recomendaciones"][:1500]
+    return texto + "\nUsá esto para elegir el enfoque, el gancho y el formato (sin copiar textos ni repetir temas)."
+
+
 def generar(cliente_id, pedido="", producto=""):
     trabajo = hub("/api/agente/trabajo", params={"cliente": cliente_id}).json()
     cliente, fotos, historial = trabajo["cliente"], trabajo["fotos"], trabajo["historial"]
@@ -81,6 +95,7 @@ def generar(cliente_id, pedido="", producto=""):
         foto = next((f for f in fotos if not f["producto"] and f["id"] not in usadas), None)
 
     temas = [h["titulo"] for h in historial]
+    tipo += texto_aprendizajes(trabajo.get("aprendizajes"))
     if foto and producto:  # app o juego: pieza publicitaria con la captura real
         captura = Image.open(io.BytesIO(hub("/api/agente/foto/" + foto["id"]).content))
         buf = io.BytesIO()

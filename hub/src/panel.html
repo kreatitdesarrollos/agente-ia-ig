@@ -76,6 +76,8 @@
       <button data-vista="propuestas" class="activo">Para aprobar</button>
       <button data-vista="historial">Historial</button>
       <button data-vista="generar">Generar</button>
+      <button data-vista="resultados">Resultados</button>
+      <button data-vista="comentarios">Comentarios</button>
       <button data-vista="clientes">Clientes</button>
       <button data-vista="actividad">Actividad</button>
     </nav>
@@ -144,7 +146,7 @@ document.querySelectorAll("nav button").forEach((b) => (b.onclick = () => ir(b.d
 function ir(vista) {
   document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("activo", b.dataset.vista === vista));
   try { localStorage.setItem("vista", vista); } catch {}
-  ({ propuestas: () => verPropuestas("pendiente"), historial: () => verPropuestas("todas"), generar: verGenerar, clientes: verClientes, actividad: verActividad })[vista]();
+  ({ propuestas: () => verPropuestas("pendiente"), historial: () => verPropuestas("todas"), generar: verGenerar, resultados: verResultados, comentarios: verComentarios, clientes: verClientes, actividad: verActividad })[vista]();
 }
 
 async function iniciar() {
@@ -182,6 +184,7 @@ async function verPropuestas(estado) {
 }
 
 function tarjetaPropuesta(p, recargar) {
+  if (p.tipo === "respuesta") return tarjetaRespuesta(p, recargar);
   const el = document.createElement("div");
   el.className = "tarjeta prop";
   const editable = p.estado === "pendiente" || p.estado === "error";
@@ -205,6 +208,86 @@ function tarjetaPropuesta(p, recargar) {
     recargar();
   })));
   return el;
+}
+
+const ICONOS = { pregunta: "❓", elogio: "💜", queja: "⚠️", compra: "🛒", spam: "🚫", otro: "💬" };
+
+function tarjetaRespuesta(p, recargar) {
+  const d = p.datos;
+  const el = document.createElement("div");
+  el.className = "tarjeta prop";
+  const editable = p.estado === "pendiente" || p.estado === "error";
+  const ocultar = d.accion === "ocultar";
+  el.innerHTML = `
+    <div class="meta"><span class="chip ${esc(p.estado)}">${esc(p.estado)}</span> ${esc(p.cliente_nombre)} · ${esc(p.creado)} UTC
+      ${d.urgente ? '<span class="chip error">urgente</span>' : ""}</div>
+    <h2>${ICONOS[d.categoria] || "💬"} @${esc(d.usuario)} <span class="chip">${esc(d.categoria || "")}</span></h2>
+    ${d.post ? `<p class="meta">En: "${esc(d.post.split("\n")[0])}"</p>` : ""}
+    <p style="white-space:pre-wrap;border-left:3px solid var(--borde);padding-left:10px">${esc(d.comentario)}</p>
+    ${ocultar ? `<p><b>Sugerencia:</b> ocultar el comentario (spam u ofensivo).</p>` :
+      editable ? `<label>Respuesta</label><textarea class="respuesta" style="min-height:90px">${esc(d.respuesta)}</textarea>` :
+      `<p><b>Respuesta:</b> ${esc(d.respuesta)}</p>`}
+    ${p.resultado.error ? `<p class="error">${esc(p.resultado.error)}</p>` : ""}
+    <div class="fila" style="margin-top:12px">${
+      p.estado === "pendiente" ? `<button class="b prim" data-a="aprobar">${ocultar ? "🙈 Ocultar" : "✅ Responder"}</button><button class="b" data-a="otra">🔄 Otra</button><button class="b peligro" data-a="descartar">Ignorar</button>` :
+      p.estado === "error" ? `<button class="b prim" data-a="reintentar">Reintentar</button><button class="b peligro" data-a="descartar">Ignorar</button>` : ""}
+    </div>`;
+  el.querySelectorAll("[data-a]").forEach((b) => (b.onclick = () => conBoton(b, async () => {
+    const cambios = editable && !ocultar ? { respuesta: $(".respuesta", el).value } : {};
+    const r = await api(`propuestas/${p.id}/${b.dataset.a}`, { method: "POST", body: cambios });
+    aviso(r.nota || (b.dataset.a === "aprobar" ? "Hecho" : "Listo"));
+    recargar();
+  })));
+  return el;
+}
+
+// ---------- resultados (estudio de contenido)
+async function verResultados() {
+  const v = $("#vista");
+  v.innerHTML = `<div class="fila" style="margin-bottom:16px">
+      <select id="rCliente" style="max-width:260px" ${yo.rol === "agencia" ? "" : "hidden"}>${opcionesClientes(yo.cliente_id || clientes[0]?.id)}</select>
+      <button class="b" id="rInforme">Generar informe ahora</button></div><div id="rCuerpo"></div>`;
+  $("#rCliente").onchange = () => cargar();
+  $("#rInforme").onclick = () => conBoton($("#rInforme"), async () => {
+    await api("informes", { method: "POST", body: { cliente: $("#rCliente").value } });
+    aviso("Informe listo (también te llegó a Telegram)");
+    cargar();
+  });
+  async function cargar() {
+    const { posts, informe } = await api("resultados?cliente=" + encodeURIComponent($("#rCliente").value));
+    const conMetricas = posts.filter((p) => p.alcance != null);
+    const prom = (campo) => conMetricas.length ? Math.round(conMetricas.reduce((t, p) => t + (p[campo] || 0), 0) / conMetricas.length) : "—";
+    $("#rCuerpo").innerHTML = `
+      <div class="grilla" style="margin-bottom:16px">
+        ${[["Posts medidos", conMetricas.length], ["Alcance promedio", prom("alcance")], ["Interacciones promedio", prom("interacciones")], ["Guardados promedio", prom("guardados")]]
+          .map(([t, n]) => `<div class="tarjeta" style="margin:0"><div class="meta" style="color:var(--suave)">${t}</div><div style="font-size:26px;font-weight:700">${n}</div></div>`).join("")}
+      </div>
+      <div class="tarjeta"><h2>Último informe</h2>${informe ? `<p class="meta" style="color:var(--suave)">${esc(informe.creado)} UTC</p><p style="white-space:pre-wrap">${esc(informe.texto)}</p>` : '<p class="vacio">Todavía no hay informes. Se generan los lunes a la mañana, o tocá "Generar informe ahora".</p>'}</div>
+      <div class="tarjeta"><h2>Posts</h2>${posts.length ? `<div style="overflow-x:auto"><table><thead><tr><th>Fecha</th><th>Post</th><th>Alcance</th><th>Interacciones</th><th>Me gusta</th><th>Coment.</th><th>Guardados</th><th>Compartidos</th></tr></thead><tbody>${
+        posts.map((p) => `<tr><td>${esc((p.fecha || "").slice(0, 10))}</td><td><a href="${esc(p.enlace)}" target="_blank" rel="noopener">${esc(p.titulo || (p.texto || "").split("\n")[0].slice(0, 60) || "(sin texto)")}</a></td>
+          <td>${p.alcance ?? "…"}</td><td>${p.interacciones ?? "…"}</td><td>${p.me_gusta}</td><td>${p.comentarios}</td><td>${p.guardados ?? "…"}</td><td>${p.compartidos ?? "…"}</td></tr>`).join("")
+      }</tbody></table></div><p class="meta" style="color:var(--suave)">"…" = todavía no se midió. Las métricas se actualizan solas cada pocas horas.</p>` : '<p class="vacio">Todavía no se sincronizaron los posts de Instagram (pasa sola cada 15 minutos).</p>'}</div>`;
+  }
+  await cargar();
+}
+
+// ---------- comentarios (reputación)
+async function verComentarios() {
+  const v = $("#vista");
+  v.innerHTML = `<div class="fila" style="margin-bottom:16px">
+      <select id="coCliente" style="max-width:260px" ${yo.rol === "agencia" ? "" : "hidden"}><option value="">Todos los clientes</option>${opcionesClientes()}</select>
+      <span class="meta" style="color:var(--suave)">Los comentarios nuevos llegan solos; las respuestas sugeridas aparecen en "Para aprobar".</span></div>
+    <div class="tarjeta" id="coLista"></div>`;
+  $("#coCliente").onchange = () => cargar();
+  async function cargar() {
+    const lista = await api("comentarios?cliente=" + encodeURIComponent(yo.rol === "agencia" ? $("#coCliente").value : yo.cliente_id));
+    $("#coLista").innerHTML = lista.length ? `<table><thead><tr><th>Fecha</th><th>Cliente</th><th>Quién</th><th>Comentario</th><th>Tipo</th><th>Estado</th></tr></thead><tbody>${
+      lista.map((c) => `<tr><td>${esc((c.fecha || "").slice(0, 16).replace("T", " "))}</td><td>${esc(c.cliente_nombre)}</td><td>@${esc(c.usuario)}</td>
+        <td>${c.enlace ? `<a href="${esc(c.enlace)}" target="_blank" rel="noopener">${esc(c.texto)}</a>` : esc(c.texto)}</td>
+        <td>${ICONOS[c.categoria] || ""} ${esc(c.categoria || "")}</td><td><span class="chip">${esc(c.estado)}</span></td></tr>`).join("")
+    }</tbody></table>` : '<p class="vacio">Todavía no hay comentarios registrados.</p>';
+  }
+  await cargar();
 }
 
 // ---------- generar
