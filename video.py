@@ -22,7 +22,9 @@ import imageio_ffmpeg
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 import agente
-from generador import hub, producto_de, foto_menos_usada, texto_aprendizajes
+import requests
+
+from generador import hub, HUB, CLAVE, producto_de, foto_menos_usada, texto_aprendizajes
 
 FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 W, H, FPS = 1080, 1920, 30
@@ -37,6 +39,15 @@ def ffmpeg(*args):
     r = subprocess.run([FFMPEG, "-y", "-loglevel", "error", *args], capture_output=True, text=True)
     if r.returncode:
         raise RuntimeError("ffmpeg: " + r.stderr[-800:])
+
+
+def base36(n):
+    letras = "0123456789abcdefghijklmnopqrstuvwxyz"
+    texto = ""
+    while n:
+        n, r = divmod(n, 36)
+        texto = letras[r] + texto
+    return texto or "0"
 
 
 def cubrir(img, w, h):
@@ -228,10 +239,14 @@ Reglas: usá solo información de la marca; no inventes precios, premios ni cifr
     print("Video: {:.1f} s, {:.1f} MB, {} escenas, música: {}".format(largo, len(datos_video) / 1e6, len(segmentos), "sí" if musica else "no"))
     if len(datos_video) > 24_000_000:
         raise RuntimeError("el video quedó muy pesado ({:.0f} MB)".format(len(datos_video) / 1e6))
+    # el video y la portada viajan en binario (el hub no tiene que decodificar nada) y después los datos
+    vid_id = "{}-v{}{}".format(cliente_id, base36(int(__import__("time").time() * 1000)), os.urandom(4).hex())
+    for tipo, contenido in (("vid", datos_video), ("img", portada.getvalue())):
+        r = requests.put("{}/api/agente/archivo/{}:{}".format(HUB, tipo, vid_id), data=contenido, headers=CLAVE, timeout=180)
+        r.raise_for_status()
     hub("/api/agente/video", json={
-        "cliente_id": cliente_id, "titulo": plan["tema"],
+        "cliente_id": cliente_id, "id": vid_id, "titulo": plan["tema"],
         "datos": {"caption": plan["caption"], "hashtags": plan["hashtags"], "producto": producto, "pedido": pedido, "segundos": round(largo, 1)},
-        "video_b64": base64.b64encode(datos_video).decode(), "portada_b64": base64.b64encode(portada.getvalue()).decode(),
     })
 
 

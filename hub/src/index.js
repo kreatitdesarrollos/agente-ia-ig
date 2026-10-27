@@ -558,13 +558,18 @@ async function apiAgente(req, env, ctx, ruta, url) {
     return Response.json(await guardarInvestigacion(env, b.cliente_id, b.datos));
   }
 
+  // Archivos grandes (videos) en binario directo: decodificar base64 de varios MB supera el límite de CPU del plan gratis.
+  const subida = ruta.match(/^archivo\/(vid|img):([\w-]+-v[a-z0-9]+)$/);
+  if (subida && req.method === "PUT") {
+    await env.ARCHIVOS.put(`${subida[1]}:${subida[2]}`, await req.arrayBuffer());
+    return Response.json({ ok: true });
+  }
   if (ruta === "video" && req.method === "POST") {
     const b = await req.json();
     const c = await env.DB.prepare("SELECT * FROM clientes WHERE id = ?").bind(b.cliente_id).first();
     if (!c) return Response.json({ error: "no existe el cliente" }, { status: 404 });
-    const id = `${c.id}-v${Date.now().toString(36)}${hex(crypto.getRandomValues(new Uint8Array(4)))}`;
-    await env.ARCHIVOS.put("vid:" + id, base64ABytes(b.video_b64));
-    await env.ARCHIVOS.put("img:" + id, base64ABytes(b.portada_b64));
+    const id = b.id;
+    if (!id?.startsWith(c.id + "-v") || !(await env.ARCHIVOS.get("vid:" + id, "stream"))) return Response.json({ error: "falta subir el video" }, { status: 400 });
     const datos = { ...b.datos, ...(c.auto_publicar ? { auto_pendiente: true } : {}) };
     await env.DB.prepare("INSERT INTO propuestas (id, cliente_id, tipo, titulo, datos) VALUES (?, ?, 'video', ?, ?)").bind(id, c.id, b.titulo, JSON.stringify(datos)).run();
     await registrar(env, c.id, "video", `Reel listo: ${b.titulo}`);
