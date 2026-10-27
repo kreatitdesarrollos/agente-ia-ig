@@ -18,6 +18,13 @@
   header { display: flex; align-items: center; gap: 12px; padding: 12px 16px; background: var(--tarjeta); border-bottom: 1px solid var(--borde); position: sticky; top: 0; z-index: 2; flex-wrap: wrap; }
   header h1 { font-size: 17px; margin: 0 8px 0 0; }
   nav { display: flex; gap: 4px; flex-wrap: wrap; }
+  @media (max-width: 760px) {
+    header { padding: 8px 12px; gap: 6px; }
+    header h1 { display: none; }
+    nav { order: 3; width: 100%; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+    nav::-webkit-scrollbar { display: none; }
+    nav button { white-space: nowrap; flex: 0 0 auto; }
+  }
   nav button { background: none; border: 0; padding: 8px 12px; border-radius: 8px; color: var(--suave); font: inherit; cursor: pointer; }
   nav button.activo { background: var(--fondo); color: var(--texto); font-weight: 600; }
   main { max-width: 1100px; margin: 0 auto; padding: 16px; }
@@ -935,7 +942,7 @@ async function editarCliente(id) {
     <div class="grilla"><div><label>Estado</label><select id="kChatActivo"><option value="0">Apagado</option><option value="1" ${chat.activo ? "selected" : ""}>Activo</option></select></div>
       <div><label>Saludo</label><input id="kChatSaludo" value="${esc(chat.saludo || "")}"></div><div><label>Color</label><input id="kChatColor" type="color" value="${esc(chat.color || "#4b3fb0")}"></div></div>
     <p class="meta" style="color:var(--suave)">Pegá esta línea antes de &lt;/body&gt; en tu web (el chat contesta solo, en segundos):</p>
-    <input readonly onclick="this.select()" value="${esc(`<script src="${location.origin}/chat/${id}.js" async></script>`)}">
+    <input readonly onclick="this.select()" value="${esc(`<script src="${location.origin}/chat/${id}.js" async><\/script>`)}">
     <h3>📲 Publicación</h3>
     <div class="grilla"><div><label>Máximo de posts por día</label><input id="kPorDia" type="number" min="1" max="6" value="${esc(pub.por_dia || 2)}"></div>
       <div><label>Horarios (separados por coma)</label><input id="kHorarios" value="${esc((pub.horarios || ["12:00", "19:00"]).join(", "))}"></div>

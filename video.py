@@ -247,7 +247,7 @@ Reglas: usá solo información de la marca; no inventes precios, premios ni cifr
     __import__("time").sleep(20)  # que el archivo ya esté disponible en todo Cloudflare cuando Telegram lo vaya a buscar
     hub("/api/agente/video", json={
         "cliente_id": cliente_id, "id": vid_id, "titulo": plan["tema"],
-        "datos": {"caption": plan["caption"], "hashtags": plan["hashtags"], "producto": producto, "pedido": pedido, "segundos": round(largo, 1)},
+        "datos": {"caption": plan["caption"], "hashtags": " ".join(plan["hashtags"]) if isinstance(plan["hashtags"], list) else plan["hashtags"], "producto": producto, "pedido": pedido, "segundos": round(largo, 1)},
     })
 
 

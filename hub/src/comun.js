@@ -26,7 +26,8 @@ export function responder(env, chat, texto) {
 
 
 export function textoFinal(datos) {
-  return `${(datos.caption || "").trim()}\n\n${(datos.hashtags || "").trim()}`.trim();
+  const tags = Array.isArray(datos.hashtags) ? datos.hashtags.join(" ") : String(datos.hashtags || "");
+  return `${String(datos.caption || "").trim()}\n\n${tags.trim()}`.trim();
 }
 
 
