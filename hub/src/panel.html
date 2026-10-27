@@ -81,7 +81,19 @@
   @keyframes saludo { 0%, 100% { transform: rotate(0); } 50% { transform: rotate(14deg); } }
   @keyframes vapor { 0% { opacity: 0; transform: translateY(0); } 40% { opacity: .9; } 100% { opacity: 0; transform: translateY(-7px); } }
   @keyframes respirar { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(1px); } }
-  @media (prefers-reduced-motion: reduce) { .puesto * { animation: none !important; } }
+  #actores .brazo-i, #actores .brazo-d { transform-box: fill-box; transform-origin: 50% 0; }
+  .sentado-teclea .brazo-i { animation: tecleo .35s infinite; } .sentado-teclea .brazo-d { animation: tecleo .35s infinite .17s; }
+  .piernas-caminan .pierna-i { animation: paso .5s infinite; transform-box: fill-box; transform-origin: 50% 0; }
+  .piernas-caminan .pierna-d { animation: paso .5s infinite reverse; transform-box: fill-box; transform-origin: 50% 0; }
+  .brazos-caminan .brazo-i { animation: paso .5s infinite reverse; } .brazos-caminan .brazo-d { animation: paso .5s infinite; }
+  .parado-espera .mano { animation: saludo 1s infinite; transform-box: fill-box; transform-origin: 50% 100%; }
+  .parado-pizarra .escribe { animation: escribe 1.2s infinite; transform-box: fill-box; transform-origin: 50% 100%; }
+  .sentado-taza .vapor path, .parado-taza .vapor path { animation: vapor 2.4s infinite; }
+  .sentado-taza .vapor path:nth-child(2), .parado-taza .vapor path:nth-child(2) { animation-delay: .8s; }
+  .sentado-error > rect:nth-of-type(2) { animation: respirar 1.5s infinite; }
+  @keyframes paso { 0%, 100% { transform: rotate(18deg); } 50% { transform: rotate(-18deg); } }
+  @keyframes escribe { 0%, 100% { transform: rotate(-8deg) translateY(0); } 50% { transform: rotate(10deg) translateY(-2px); } }
+  @media (prefers-reduced-motion: reduce) { .puesto *, #actores * { animation: none !important; } }
   .modal { position: fixed; inset: 0; background: #0008; display: grid; place-items: start center; padding: 6vh 16px; z-index: 6; overflow-y: auto; }
   .modal > div { background: var(--tarjeta); border-radius: 14px; padding: 18px; width: min(720px, 100%); }
   h3 { font-size: 14px; margin: 16px 0 8px; }
@@ -185,6 +197,7 @@ document.querySelectorAll("nav button").forEach((b) => (b.onclick = () => ir(b.d
 let relojOficina = null;
 function ir(vista) {
   clearInterval(relojOficina);
+  if (vida.raf) { cancelAnimationFrame(vida.raf); vida.raf = null; }
   document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("activo", b.dataset.vista === vista));
   try { localStorage.setItem("vista", vista); } catch {}
   ({ propuestas: () => verPropuestas("pendiente"), historial: () => verPropuestas("todas"), generar: verGenerar, resultados: verResultados, investigacion: verInvestigacion, comentarios: verComentarios, resenas: verResenas, leads: verLeads, anuncios: verAnuncios, ayuda: verAyuda, oficina: verOficina, clientes: verClientes, actividad: verActividad })[vista]();
@@ -908,13 +921,11 @@ const planta = (x, y, alto = 1) => caja(x, y, 0, 0.5, 0.5, 0.45, "#b5651d", "#8b
 const PUESTOS = { redactor: [1.6, 2.2], community: [5.4, 2.2], vendedor: [9.2, 2.2], atencion: [13, 2.2],
   emails: [1.6, 6.4], analista: [5.4, 6.4], investigador: [9.2, 6.4], trafficker: [13, 6.4] };
 
-function puesto(a) {
-  const { camisa, pelo, piel } = ASPECTO[a.id];
+// Lo fijo de cada puesto: escritorio, monitor (según el estado real), teclado, taza y silla.
+function puestoFijo(a) {
   const [dx, dy] = PUESTOS[a.id];
   const pantalla = a.estado === "trabajando" ? "#1e6091" : a.estado === "error" ? "#9b2226" : "#1b1e2b";
-  let g = "";
-  // escritorio y monitor (la pantalla mira hacia la persona, en +y)
-  g += caja(dx, dy, 0, 1.9, 1.0, 0.72, "#c8a27a", "#9c6b3f", "#b07d4f");
+  let g = caja(dx, dy, 0, 1.9, 1.0, 0.72, "#c8a27a", "#9c6b3f", "#b07d4f");
   g += caja(dx + 0.55, dy + 0.18, 0.72, 0.8, 0.08, 0.55, "#2b2d3a", "#2b2d3a", "#3a3d4f");
   g += poli(pantalla, P(dx + 0.6, dy + 0.27, 0.78), P(dx + 1.3, dy + 0.27, 0.78), P(dx + 1.3, dy + 0.27, 1.22), P(dx + 0.6, dy + 0.27, 1.22));
   if (a.estado === "trabajando") {
@@ -923,53 +934,202 @@ function puesto(a) {
       g += `<line class="linea" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#90e0ef" stroke-width="2"/>`;
     }
   }
-  g += caja(dx + 0.6, dy + 0.55, 0.72, 0.7, 0.25, 0.03, "#e9ecef", "#ced4da", "#dee2e6"); // teclado
-  if (a.estado !== "descanso") g += caja(dx + 1.5, dy + 0.4, 0.72, 0.16, 0.16, 0.18, "#fff", "#e9ecef", "#dee2e6"); // taza en el escritorio
+  g += caja(dx + 0.6, dy + 0.55, 0.72, 0.7, 0.25, 0.03, "#e9ecef", "#ced4da", "#dee2e6");
+  g += caja(dx + 1.5, dy + 0.4, 0.72, 0.16, 0.16, 0.18, "#fff", "#e9ecef", "#dee2e6");
+  const [sx, sy] = P(dx + 0.95, dy + 1.55, 0);
+  g += `<rect x="${sx - 2}" y="${sy - 16}" width="4" height="16" fill="#495057"/><ellipse cx="${sx}" cy="${sy}" rx="12" ry="4" fill="#343a40"/><rect x="${sx - 12}" y="${sy - 24}" width="24" height="18" rx="4" fill="#1d3557"/>`;
+  return `<g class="${a.estado}">${g}</g>`;
+}
 
-  // persona: sentada (de espaldas, mirando el monitor) o parada al lado con la mano levantada
-  const parado = a.estado === "esperando";
-  const [ax, ay] = parado ? P(dx + 2.35, dy + 0.9, 0) : P(dx + 0.95, dy + 1.55, 0.48);
-  const cuerpo = parado ? ay - 36 : ay - 24;
-  let persona = "";
-  if (parado) {
-    persona += `<rect x="${ax - 7}" y="${ay - 16}" width="6" height="16" fill="#343a40"/><rect x="${ax + 1}" y="${ay - 16}" width="6" height="16" fill="#343a40"/>`;
-  }
-  persona += `<rect x="${ax - 9}" y="${cuerpo}" width="18" height="${parado ? 22 : 24}" rx="5" fill="${camisa}"/>`;
-  persona += `<circle cx="${ax}" cy="${cuerpo - 8}" r="8" fill="${piel}"/><path d="M${ax - 8} ${cuerpo - 8} a8 8 0 0 1 16 0 z" fill="${pelo}"/>`;
-  if (a.estado === "trabajando") {
-    persona += `<rect class="brazo-i" x="${ax - 13}" y="${cuerpo + 3}" width="5" height="13" rx="2" fill="${camisa}"/><rect class="brazo-d" x="${ax + 8}" y="${cuerpo + 3}" width="5" height="13" rx="2" fill="${camisa}"/>`;
-  } else if (parado) {
-    persona += `<g class="mano"><rect x="${ax + 8}" y="${cuerpo - 18}" width="5" height="20" rx="2" fill="${camisa}"/><circle cx="${ax + 10.5}" cy="${cuerpo - 20}" r="3.5" fill="${piel}"/></g>`;
-    persona += `<rect x="${ax - 13}" y="${cuerpo + 3}" width="5" height="15" rx="2" fill="${camisa}"/>`;
-  } else if (a.estado === "descanso") {
-    persona += `<rect x="${ax + 7}" y="${cuerpo - 4}" width="5" height="12" rx="2" fill="${camisa}"/><rect x="${ax + 9}" y="${cuerpo - 12}" width="7" height="8" rx="1" fill="#fff"/>`;
-    persona += `<g class="vapor" fill="none" stroke="#adb5bd" stroke-width="1.5"><path d="M${ax + 11} ${cuerpo - 14} q2 -3 0 -6"/><path d="M${ax + 14} ${cuerpo - 14} q2 -3 0 -6"/></g>`;
-    persona += `<rect x="${ax - 13}" y="${cuerpo + 3}" width="5" height="13" rx="2" fill="${camisa}"/>`;
-  } else {
-    persona += `<rect x="${ax - 13}" y="${cuerpo + 3}" width="5" height="13" rx="2" fill="${camisa}"/><rect x="${ax + 8}" y="${cuerpo + 3}" width="5" height="13" rx="2" fill="${camisa}"/>`;
-  }
-  // silla: si está sentado, el respaldo tapa la parte de abajo de la espalda
-  const silla = (() => {
-    const [sx, sy] = P(dx + 0.95, dy + 1.55, 0);
-    return `<rect x="${sx - 2}" y="${sy - 16}" width="4" height="16" fill="#495057"/><ellipse cx="${sx}" cy="${sy}" rx="12" ry="4" fill="#343a40"/>` +
-      (parado ? `<rect x="${sx - 12}" y="${sy - 34}" width="24" height="20" rx="4" fill="#1d3557"/>` : `<rect x="${sx - 12}" y="${sy - 24}" width="24" height="18" rx="4" fill="#1d3557"/>`);
-  })();
-  g += parado ? silla + persona : persona + silla;
-
-  // cartel arriba: nombre y estado
+// El cartel con nombre y estado, y la zona para tocar el puesto.
+function cartelPuesto(a) {
+  const [dx, dy] = PUESTOS[a.id];
   const [bx, by] = P(dx + 0.95, dy + 0.5, 2.6);
   const colorEstado = { trabajando: "#2a9d8f", esperando: "#e76f51", descanso: "#6c757d", error: "#d62828" }[a.estado];
   const corto = { trabajando: "trabajando…", esperando: `esperando tu OK${a.pendientes ? " (" + a.pendientes + ")" : ""}`, descanso: "☕ en pausa", error: "⚠️ tuvo un problema" }[a.estado];
-  g += `<g class="cartelito"><rect x="${bx - 62}" y="${by - 30}" width="124" height="34" rx="8" fill="var(--tarjeta)" stroke="${colorEstado}" stroke-width="1.5"/>
+  let g = `<g class="cartelito"><rect x="${bx - 62}" y="${by - 30}" width="124" height="34" rx="8" fill="var(--tarjeta)" stroke="${colorEstado}" stroke-width="1.5"/>
     <path d="M${bx - 5} ${by + 4} l5 7 l5 -7 z" fill="${colorEstado}"/>
     <text x="${bx}" y="${by - 15}" text-anchor="middle" font-size="11" font-weight="700" fill="var(--texto)">${ICONO_AGENTE[a.id]} ${esc(a.nombre.split(" ")[0])}</text>
     <text x="${bx}" y="${by - 2}" text-anchor="middle" font-size="10" fill="${colorEstado}">${esc(corto)}</text></g>`;
   if (a.pendientes) g += `<circle cx="${bx + 60}" cy="${by - 30}" r="10" fill="#e76f51"/><text x="${bx + 60}" y="${by - 26.5}" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">${a.pendientes}</text>`;
   if (a.estado === "error") g += `<g class="alerta"><circle cx="${bx - 60}" cy="${by - 30}" r="10" fill="#d62828"/><text x="${bx - 60}" y="${by - 26}" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">!</text></g>`;
-  // zona clickeable
   const [hx, hy] = P(dx + 0.95, dy + 0.9, 0.6);
   g += `<rect x="${hx - 62}" y="${by - 34}" width="124" height="${hy - by + 60}" fill="transparent"/>`;
   return `<g class="puesto ${a.estado}" data-agente="${a.id}" role="button" tabindex="0" aria-label="${esc(a.nombre)}: ${esc(TEXTO_ESTADO[a.estado])}. ${esc(a.globo)}"><title>${esc(a.nombre)} — ${esc(a.globo || a.tarea)}</title>${g}</g>`;
+}
+
+// ---------- vida en la oficina: cada agente es un personaje que se mueve según su estado real
+const LUGARES = {
+  cafe: [[1.3, 7.8], [1.3, 8.7], [0.55, 7.15]],        // al lado de la cafetera (hasta 3 a la vez)
+  ventana: [[4.45, 1.05], [8.25, 1.05], [12.05, 1.05]], // frente a los ventanales, entre los escritorios de atrás
+  pizarra: [[0.75, 2.9]],
+};
+const PASILLO = 5.0; // el pasillo entre las dos filas de escritorios
+const VELOCIDAD = 1.3; // unidades por segundo
+const vida = { actores: {}, raf: null, ultimo: 0 };
+
+const silla = (id) => { const [dx, dy] = PUESTOS[id]; return [dx + 0.95, dy + 1.55]; };
+const alLado = (id) => { const [dx, dy] = PUESTOS[id]; return [dx + 2.35, dy + 0.9]; }; // donde espera parado tu OK
+const deAdelante = (id) => PUESTOS[id][1] > PASILLO;
+
+// Camino por los pasillos desde donde está hasta un destino (evita atravesar escritorios).
+function ruta(act, destino, aSilla = false) {
+  const [x0, y0] = act.pos, [xd, yd] = destino;
+  const salir = [];
+  if (act.modo.startsWith("sentado") && deAdelante(act.id)) salir.push([PUESTOS[act.id][0] - 0.35, y0], [PUESTOS[act.id][0] - 0.35, PASILLO]);
+  else if (Math.abs(y0 - PASILLO) > 0.01) salir.push([x0, PASILLO]);
+  const llegar = [];
+  if (aSilla && deAdelante(act.id)) llegar.push([PUESTOS[act.id][0] - 0.35, PASILLO], [PUESTOS[act.id][0] - 0.35, yd]);
+  else llegar.push([xd, PASILLO]);
+  return [...salir, ...llegar, destino];
+}
+
+function ocupar(lugar, id) {
+  const usados = Object.values(vida.actores).filter((a) => a.id !== id && a.lugar).map((a) => a.lugar);
+  const libre = LUGARES[lugar].findIndex((_, k) => !usados.includes(lugar + k));
+  return libre < 0 ? null : lugar + libre;
+}
+
+function irA(act, lugarId, modoAlLlegar, segundos) {
+  const [nombre, k] = [lugarId.replace(/\d+$/, ""), Number(lugarId.match(/\d+$/)[0])];
+  act.lugar = lugarId;
+  act.camino = ruta(act, LUGARES[nombre][k]);
+  act.modo = "caminando";
+  act.alLlegar = { modo: modoAlLlegar, segundos };
+}
+
+function volverAlPuesto(act, modo) {
+  act.lugar = null;
+  act.camino = modo === "parado-espera" ? ruta(act, alLado(act.id)) : ruta(act, silla(act.id), true);
+  act.modo = "caminando";
+  act.alLlegar = { modo, segundos: 0 };
+}
+
+const azar = (a, b) => a + Math.random() * (b - a);
+
+// Qué hace cada uno cuando termina lo que estaba haciendo (o cuando cambia su estado real).
+function decidir(act, ahora) {
+  const m = act.modo, sentado = m.startsWith("sentado");
+  if (m === "caminando") return;
+  if (act.estado === "esperando") {
+    if (m === "parado-espera") return (act.hasta = ahora + 60000);
+    return volverAlPuesto(act, "parado-espera");
+  }
+  if (act.estado === "error") {
+    if (sentado) { act.modo = "sentado-error"; return (act.hasta = ahora + 60000); }
+    return volverAlPuesto(act, "sentado-error");
+  }
+  if (act.estado === "trabajando") {
+    if (m === "parado-pizarra" || !sentado) return volverAlPuesto(act, "sentado-teclea");
+    if (act.id === "investigador" && m === "sentado-teclea" && Math.random() < 0.3) {
+      const lugar = ocupar("pizarra", act.id);
+      if (lugar) return irA(act, lugar, "parado-pizarra", azar(15, 25));
+    }
+    act.modo = m === "sentado-teclea" && Math.random() < 0.3 ? "sentado-estira" : "sentado-teclea";
+    return (act.hasta = ahora + (act.modo === "sentado-estira" ? 2500 : azar(12000, 30000)));
+  }
+  // en pausa: café en el escritorio, ir a la cafetera, mirar por la ventana o volver a sentarse
+  if (!sentado) return volverAlPuesto(act, "sentado-taza");
+  const r = Math.random();
+  if (r < 0.2) { const l = ocupar("cafe", act.id); if (l) return irA(act, l, "parado-taza", azar(15, 30)); }
+  if (r < 0.3) { const l = ocupar("ventana", act.id); if (l) return irA(act, l, "parado-ventana", azar(10, 20)); }
+  act.modo = "sentado-taza";
+  act.hasta = ahora + azar(15000, 40000);
+}
+
+// Avanza a los que caminan y decide cuando se cumple el tiempo de cada uno.
+function avanzarVida(ahora) {
+  const dt = Math.min(0.1, (ahora - (vida.ultimo || ahora)) / 1000);
+  vida.ultimo = ahora;
+  for (const act of Object.values(vida.actores)) {
+    if (act.modo === "caminando") {
+      let paso = VELOCIDAD * dt;
+      while (paso > 0 && act.camino.length) {
+        const [tx, ty] = act.camino[0];
+        const ddx = tx - act.pos[0], ddy = ty - act.pos[1], dist = Math.hypot(ddx, ddy);
+        if (dist <= paso) { act.pos = [tx, ty]; act.camino.shift(); paso -= dist; }
+        else { act.pos = [act.pos[0] + (ddx / dist) * paso, act.pos[1] + (ddy / dist) * paso]; act.dir = [ddx, ddy]; paso = 0; }
+      }
+      if (!act.camino.length) {
+        act.modo = act.alLlegar.modo;
+        act.hasta = ahora + (act.alLlegar.segundos ? act.alLlegar.segundos * 1000 : azar(8000, 18000));
+        if (act.modo.startsWith("sentado")) act.pos = silla(act.id);
+        const paseo = act.modo === "parado-taza" || act.modo === "parado-ventana";
+        if ((paseo && act.estado !== "descanso") || (act.modo === "parado-espera") !== (act.estado === "esperando")) act.hasta = ahora;
+      }
+    } else if (ahora >= act.hasta) decidir(act, ahora);
+  }
+}
+
+// Dibujo de cada personaje según lo que está haciendo (origen: los pies, o el asiento si está sentado).
+function figura(act) {
+  const { camisa, pelo, piel } = ASPECTO[act.id];
+  const m = act.modo;
+  const sentado = m.startsWith("sentado");
+  // de frente cuando camina hacia el espectador (abajo en pantalla) o está parado esperando
+  const [sdx, sdy] = act.dir ? [(act.dir[0] - act.dir[1]) * 0.866, (act.dir[0] + act.dir[1]) * 0.5] : [0, -1];
+  const deFrente = m === "parado-espera" || m === "parado-taza" || (m === "caminando" && sdy > 0.05);
+  const espejo = m === "caminando" && sdx < 0 ? -1 : 1;
+  const cuerpoY = sentado ? -24 : -38, cabezaY = cuerpoY - 8;
+  let f = "";
+  if (!sentado) {
+    f += `<g class="${m === "caminando" ? "piernas-caminan" : ""}"><rect class="pierna-i" x="-7" y="-16" width="6" height="16" fill="#343a40"/><rect class="pierna-d" x="1" y="-16" width="6" height="16" fill="#343a40"/></g>`;
+  }
+  f += `<rect x="-9" y="${cuerpoY}" width="18" height="${sentado ? 24 : 22}" rx="5" fill="${camisa}"/>`;
+  f += `<circle cx="0" cy="${cabezaY}" r="8" fill="${piel}"/>`;
+  f += deFrente ? `<path d="M-8 ${cabezaY} a8 8 0 0 1 16 0 l0 -2 z" fill="${pelo}"/><rect x="-4" y="${cabezaY - 1}" width="2" height="2" fill="#222"/><rect x="2" y="${cabezaY - 1}" width="2" height="2" fill="#222"/><rect x="-2" y="${cabezaY + 3}" width="4" height="1.5" fill="#a0522d"/>`
+    : `<path d="M-8 ${cabezaY + 1} a8 8 0 0 1 16 0 z" fill="${pelo}"/>`;
+  const brazo = (x, y, h, extra = "") => `<rect ${extra} x="${x}" y="${y}" width="5" height="${h}" rx="2" fill="${camisa}"/>`;
+  const taza = (x, y) => `<rect x="${x}" y="${y}" width="7" height="8" rx="1" fill="#fff"/><g class="vapor" fill="none" stroke="#adb5bd" stroke-width="1.5"><path d="M${x + 2} ${y - 2} q2 -3 0 -6"/><path d="M${x + 5} ${y - 2} q2 -3 0 -6"/></g>`;
+  if (m === "sentado-teclea") f += brazo(-13, cuerpoY + 3, 13, 'class="brazo-i"') + brazo(8, cuerpoY + 3, 13, 'class="brazo-d"');
+  else if (m === "sentado-estira") f += brazo(-12, cuerpoY - 18, 20) + brazo(7, cuerpoY - 18, 20);
+  else if (m === "sentado-taza") f += brazo(-13, cuerpoY + 3, 13) + brazo(7, cuerpoY - 4, 12) + taza(9, cuerpoY - 12);
+  else if (m === "sentado-error") f += brazo(-12, cuerpoY - 12, 14) + brazo(7, cuerpoY - 12, 14);
+  else if (m === "parado-espera") f += brazo(-13, cuerpoY + 3, 15) + `<g class="mano">${brazo(8, cuerpoY - 18, 20)}<circle cx="10.5" cy="${cuerpoY - 20}" r="3.5" fill="${piel}"/></g>`;
+  else if (m === "parado-taza") f += brazo(-13, cuerpoY + 3, 15) + brazo(7, cuerpoY - 4, 12) + taza(9, cuerpoY - 12);
+  else if (m === "parado-pizarra") f += brazo(-13, cuerpoY + 3, 15) + `<g class="escribe">${brazo(-14, cuerpoY - 16, 18)}</g>`;
+  else if (m === "caminando") f += `<g class="brazos-caminan">${brazo(-13, cuerpoY + 3, 14, 'class="brazo-i"')}${brazo(8, cuerpoY + 3, 14, 'class="brazo-d"')}</g>`;
+  else f += brazo(-13, cuerpoY + 3, 15) + brazo(8, cuerpoY + 3, 15);
+  if (sentado) f += `<rect x="-12" y="-8" width="24" height="18" rx="4" fill="#1d3557"/>`; // respaldo de la silla
+  const charla = m === "parado-taza" && Object.values(vida.actores).filter((a) => a.modo === "parado-taza").length > 1;
+  if (charla) f += `<text x="12" y="${cabezaY - 12}" font-size="12">💬</text>`;
+  const [px, py] = sentado ? P(act.pos[0], act.pos[1], 0.48) : P(act.pos[0], act.pos[1], 0);
+  return `<g transform="translate(${px.toFixed(1)} ${py.toFixed(1)}) scale(${espejo} 1)" class="${m}">${f}</g>`;
+}
+
+function dibujarActores() {
+  const capa = document.getElementById("actores");
+  if (!capa) return;
+  // de atrás hacia adelante para que se tapen bien entre ellos
+  capa.innerHTML = Object.values(vida.actores).sort((a, b) => a.pos[0] + a.pos[1] - (b.pos[0] + b.pos[1])).map(figura).join("");
+}
+
+function cicloVida(t) {
+  if (!document.getElementById("actores")) { vida.raf = null; return; }
+  if (!document.hidden && t - (vida.dibujado || 0) > 33) { avanzarVida(t); dibujarActores(); vida.dibujado = t; }
+  vida.raf = requestAnimationFrame(cicloVida);
+}
+
+// Con datos nuevos: actualiza el estado real de cada uno (el que tenía otra cosa, cambia de plan enseguida).
+function actualizarActores(agentes) {
+  const quieto = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const ahora = performance.now();
+  for (const a of agentes) {
+    let act = vida.actores[a.id];
+    if (!act) {
+      act = vida.actores[a.id] = { id: a.id, estado: a.estado, pos: silla(a.id), modo: "sentado-teclea", hasta: 0, lugar: null };
+      act.hasta = ahora + azar(0, 4000); // que no arranquen todos a la vez
+    }
+    if (act.estado !== a.estado) { act.estado = a.estado; if (act.modo !== "caminando") act.hasta = 0; }
+    if (quieto) { // sin animación: cada uno en la pose de su estado, en su puesto
+      act.lugar = null; act.camino = [];
+      act.modo = { trabajando: "sentado-teclea", esperando: "parado-espera", descanso: "sentado-taza", error: "sentado-error" }[a.estado];
+      act.pos = act.modo === "parado-espera" ? alLado(a.id) : silla(a.id);
+      act.hasta = Infinity;
+    }
+  }
+  dibujarActores();
+  if (!vida.raf && !quieto) vida.raf = requestAnimationFrame(cicloVida);
 }
 
 function salaOficina(agentes) {
@@ -1006,9 +1166,9 @@ function salaOficina(agentes) {
   s += poli("#577590", P(4.2, 4.6, 0.01), P(12.4, 4.6, 0.01), P(12.4, 5.6, 0.01), P(4.2, 5.6, 0.01));
   s += caja(0.1, 7.6, 0, 0.9, 0.9, 1.0, "#6c757d", "#495057", "#5c636a") + caja(0.25, 7.75, 1.0, 0.55, 0.45, 0.5, "#212529", "#343a40", "#2b3035");
   s += planta(15.6, 0.3, 1.3) + planta(0.3, 0.3, 1.1) + planta(15.6, 9.2, 1.2);
-  // puestos ordenados de atrás hacia adelante
+  // puestos de atrás hacia adelante, los personajes (que se mueven) y arriba de todo los carteles
   const orden = [...agentes].sort((a, b) => PUESTOS[a.id][0] + PUESTOS[a.id][1] - (PUESTOS[b.id][0] + PUESTOS[b.id][1]));
-  s += orden.map(puesto).join("");
+  s += orden.map(puestoFijo).join("") + `<g id="actores" style="pointer-events:none"></g>` + orden.map(cartelPuesto).join("");
   // marco del dibujo según el tamaño real de la sala (con lugar para los carteles de arriba)
   const izq = P(0, D)[0] - 20, der = P(L, 0)[0] + 20, arriba = P(0, 0, H)[1] - 40, abajo = P(L, D, -0.3)[1] + 16;
   return `<svg viewBox="${izq.toFixed(0)} ${arriba.toFixed(0)} ${(der - izq).toFixed(0)} ${(abajo - arriba).toFixed(0)}" role="img" aria-label="Oficina con los agentes de IA" style="width:100%;height:auto;display:block">${s}</svg>`;
@@ -1034,6 +1194,7 @@ async function verOficina() {
     ultimo = o;
     $("#oTitulo").textContent = `Oficina de ${o.cliente.nombre} · ${o.hora} hs · ${o.agentes.filter((a) => a.estado === "trabajando").length} trabajando ahora`;
     $("#oSala").innerHTML = salaOficina(o.agentes);
+    actualizarActores(o.agentes);
     $("#oLista").innerHTML = o.agentes.map((a) => `<div class="fila" data-agente="${a.id}" role="button" tabindex="0" style="cursor:pointer;padding:6px 0;border-bottom:1px solid var(--borde)">
       <b style="min-width:200px">${ICONO_AGENTE[a.id]} ${esc(a.nombre)}</b><span class="estado ${a.estado}">${esc(TEXTO_ESTADO[a.estado])}</span>
       <span class="meta" style="color:var(--suave);flex:1">${esc(a.globo || a.tarea)}</span>${a.pendientes ? `<span class="chip pendiente">${a.pendientes} para aprobar</span>` : ""}</div>`).join("");
