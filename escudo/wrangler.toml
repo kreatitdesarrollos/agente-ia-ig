@@ -1,0 +1,11 @@
+name = "kreatit-escudo"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+workers_dev = false
+
+# Delante de la web de Kreatit y de la web de Vagón. NO va delante de hotel. ni backend-cf. (ya están bien).
+routes = [
+  { pattern = "kreatit.com.ar/*", zone_name = "kreatit.com.ar" },
+  { pattern = "www.kreatit.com.ar/*", zone_name = "kreatit.com.ar" },
+  { pattern = "cf.kreatit.com.ar/*", zone_name = "kreatit.com.ar" },
+]
