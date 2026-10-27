@@ -113,7 +113,7 @@ def buscar(cliente_id, prospeccion_id, cantidad=20):
     if not filtros:
         raise RuntimeError("no supe qué buscar para el rubro '{}'".format(p["rubro"]))
     area, donde = area_osm(p["zona"] or "Argentina")
-    consulta = "[out:json][timeout:90];{}({});out center tags 400;".format(
+    consulta = "[out:json][timeout:180];{}({});out center tags 5000;".format(
         area, "".join('nwr["{}"="{}"]{};'.format(k, v, donde) for k, v in filtros))
     elementos = consultar_overpass(consulta)
     if elementos is None:  # servidores saturados: último recurso, el buscador de OpenStreetMap
@@ -170,7 +170,8 @@ Respondé SOLO con un JSON:
 - "asunto": máximo 55 caracteres, específico para ellos, honesto (nada de "RE:" falso, mayúsculas ni signos de más)
 - "cuerpo": texto plano de 70 a 130 palabras: saludo dirigido a {nombre}; UNA observación concreta y real de su web
   (si no hay datos, no inventes: hablá del rubro); cómo los ayuda lo que ofrecemos, en beneficios; invitación clara y
-  sin presión a probar la demo en {link}; cierre con una pregunta simple. Sin firma (se agrega sola), sin markdown,
+  sin presión a probar la demo en {link} (si la oferta trae datos de acceso a la demo, como usuario y contraseña,
+  copialos exactos en una línea aparte); cierre con una pregunta simple. Sin firma (se agrega sola), sin markdown,
   sin precios ni datos que no estén en la información de la marca, y sin inventar condiciones de la prueba
   (tarjeta, días gratis, plazos) que no figuren en la oferta.""".format(
                 marca=cliente["marca"], quien=cliente["nombre"], oferta=p["oferta"], link=p["link"] or "",
