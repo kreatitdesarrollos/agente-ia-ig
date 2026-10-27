@@ -171,7 +171,8 @@ Respondé SOLO con un JSON:
 - "cuerpo": texto plano de 70 a 130 palabras: saludo dirigido a {nombre}; UNA observación concreta y real de su web
   (si no hay datos, no inventes: hablá del rubro); cómo los ayuda lo que ofrecemos, en beneficios; invitación clara y
   sin presión a probar la demo en {link}; cierre con una pregunta simple. Sin firma (se agrega sola), sin markdown,
-  sin precios ni datos que no estén en la información de la marca.""".format(
+  sin precios ni datos que no estén en la información de la marca, y sin inventar condiciones de la prueba
+  (tarjeta, días gratis, plazos) que no figuren en la oferta.""".format(
                 marca=cliente["marca"], quien=cliente["nombre"], oferta=p["oferta"], link=p["link"] or "",
                 nombre=x["nombre"] or "el equipo", web=x.get("web") or "-", ciudad=x.get("ciudad") or "-", texto=texto_web[:3000]))
         except Exception as e:
