@@ -130,6 +130,7 @@
       <button data-vista="comentarios">Comentarios</button>
       <button data-vista="resenas">Reseñas</button>
       <button data-vista="clientes">Clientes</button>
+      <button data-vista="seguridad">Seguridad</button>
       <button data-vista="actividad">Actividad</button>
       <button data-vista="ayuda">Ayuda</button>
     </nav>
@@ -201,7 +202,7 @@ function ir(vista) {
   if (vida.raf) { cancelAnimationFrame(vida.raf); vida.raf = null; }
   document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("activo", b.dataset.vista === vista));
   try { localStorage.setItem("vista", vista); } catch {}
-  ({ propuestas: () => verPropuestas("pendiente"), historial: () => verPropuestas("todas"), generar: verGenerar, resultados: verResultados, investigacion: verInvestigacion, comentarios: verComentarios, resenas: verResenas, leads: verLeads, prospeccion: verProspeccion, anuncios: verAnuncios, ayuda: verAyuda, oficina: verOficina, clientes: verClientes, actividad: verActividad })[vista]();
+  ({ propuestas: () => verPropuestas("pendiente"), historial: () => verPropuestas("todas"), generar: verGenerar, resultados: verResultados, investigacion: verInvestigacion, comentarios: verComentarios, resenas: verResenas, leads: verLeads, prospeccion: verProspeccion, anuncios: verAnuncios, ayuda: verAyuda, oficina: verOficina, seguridad: verSeguridad, clientes: verClientes, actividad: verActividad })[vista]();
 }
 
 async function iniciar() {
@@ -1009,8 +1010,10 @@ const ASPECTO = {
   analista: { camisa: "#457b9d", pelo: "#2b2b2b", piel: "#8d5524" },
   investigador: { camisa: "#6a994e", pelo: "#c9c9c9", piel: "#f1c27d" },
   trafficker: { camisa: "#d62828", pelo: "#ffb703", piel: "#e0ac69" },
+  prospector: { camisa: "#0077b6", pelo: "#5e3023", piel: "#f1c27d" },
+  seguridad: { camisa: "#212529", pelo: "#111111", piel: "#c68642" },
 };
-const ICONO_AGENTE = { redactor: "✍️", community: "💬", vendedor: "🤝", atencion: "⭐", emails: "✉️", analista: "📊", investigador: "🔎", trafficker: "📣" };
+const ICONO_AGENTE = { redactor: "✍️", community: "💬", vendedor: "🤝", atencion: "⭐", emails: "✉️", analista: "📊", investigador: "🔎", trafficker: "📣", prospector: "📨", seguridad: "🛡️" };
 const TEXTO_ESTADO = { trabajando: "trabajando", esperando: "esperando tu OK", descanso: "tomando un café", error: "con un problema" };
 
 // Oficina isométrica: una sala con los 8 agentes en sus escritorios. Todo dibujado en SVG (sin imágenes externas).
@@ -1031,8 +1034,8 @@ const planta = (x, y, alto = 1) => caja(x, y, 0, 0.5, 0.5, 0.45, "#b5651d", "#8b
     return `<ellipse cx="${px + dx * alto}" cy="${py + dy * alto}" rx="${9 * alto}" ry="${5 * alto}" fill="${k % 2 ? "#2d6a4f" : "#40916c"}" transform="rotate(${dx * 2} ${px + dx * alto} ${py + dy * alto})"/>`;
   }).join("");
 
-const PUESTOS = { redactor: [1.6, 2.2], community: [5.4, 2.2], vendedor: [9.2, 2.2], atencion: [13, 2.2],
-  emails: [1.6, 6.4], analista: [5.4, 6.4], investigador: [9.2, 6.4], trafficker: [13, 6.4] };
+const PUESTOS = { redactor: [1.6, 2.2], community: [5.4, 2.2], vendedor: [9.2, 2.2], atencion: [13, 2.2], prospector: [16.8, 2.2],
+  emails: [1.6, 6.4], analista: [5.4, 6.4], investigador: [9.2, 6.4], trafficker: [13, 6.4], seguridad: [16.8, 6.4] };
 
 // Lo fijo de cada puesto: escritorio, monitor (según el estado real), teclado, taza y silla.
 function puestoFijo(a) {
@@ -1074,7 +1077,7 @@ function cartelPuesto(a) {
 // ---------- vida en la oficina: cada agente es un personaje que se mueve según su estado real
 const LUGARES = {
   cafe: [[1.3, 7.8], [1.3, 8.7], [0.55, 7.15]],        // al lado de la cafetera (hasta 3 a la vez)
-  ventana: [[4.45, 1.05], [8.25, 1.05], [12.05, 1.05]], // frente a los ventanales, entre los escritorios de atrás
+  ventana: [[4.45, 1.05], [8.25, 1.05], [12.05, 1.05], [15.85, 1.05]], // frente a los ventanales, entre los escritorios de atrás
   pizarra: [[0.75, 2.9]],
 };
 const PASILLO = 5.0; // el pasillo entre las dos filas de escritorios
@@ -1246,14 +1249,14 @@ function actualizarActores(agentes) {
 }
 
 function salaOficina(agentes) {
-  const L = 16.5, D = 10, H = 3.4; // largo (x), fondo (y) y alto de la sala
+  const L = 20.5, D = 10, H = 3.4; // largo (x), fondo (y) y alto de la sala
   let s = "";
   // paredes del fondo
   s += poli("#dfe3ea", P(0, 0, 0), P(L, 0, 0), P(L, 0, H), P(0, 0, H));
   s += poli("#c9ced8", P(0, 0, 0), P(0, D, 0), P(0, D, H), P(0, 0, H));
   s += caja(-0.25, -0.25, H, L + 0.25, 0.25, 0.12, "#f8f9fa", "#e9ecef", "#dee2e6") + caja(-0.25, 0, H, 0.25, D, 0.12, "#f8f9fa", "#e9ecef", "#dee2e6");
   // ventanales en la pared del fondo
-  for (let k = 0; k < 5; k++) {
+  for (let k = 0; k < 7; k++) {
     const x = 5.6 + k * 2.1;
     s += poli("#f1f3f5", P(x - 0.08, 0, 0.55), P(x + 1.78, 0, 0.55), P(x + 1.78, 0, 3.05), P(x - 0.08, 0, 3.05));
     s += poli("#4d7ea8", P(x, 0, 0.62), P(x + 1.7, 0, 0.62), P(x + 1.7, 0, 2.98), P(x, 0, 2.98));
@@ -1276,9 +1279,9 @@ function salaOficina(agentes) {
   for (let y = 0.5; y < D; y += 0.5) { const [x1, y1] = P(0, y), [x2, y2] = P(L, y); s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#8b5e34" stroke-width="0.7" opacity=".6"/>`; }
   for (let x = 2; x < L; x += 2.7) for (let y = 0; y < D; y += 1) { const o = (y % 2) * 1.3; if (x + o >= L) continue; const [x1, y1] = P(x + o, y), [x2, y2] = P(x + o, y + 0.5); s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#8b5e34" stroke-width="0.7" opacity=".5"/>`; }
   // alfombra, máquina de café y plantas
-  s += poli("#577590", P(4.2, 4.6, 0.01), P(12.4, 4.6, 0.01), P(12.4, 5.6, 0.01), P(4.2, 5.6, 0.01));
+  s += poli("#577590", P(4.2, 4.6, 0.01), P(16.4, 4.6, 0.01), P(16.4, 5.6, 0.01), P(4.2, 5.6, 0.01));
   s += caja(0.1, 7.6, 0, 0.9, 0.9, 1.0, "#6c757d", "#495057", "#5c636a") + caja(0.25, 7.75, 1.0, 0.55, 0.45, 0.5, "#212529", "#343a40", "#2b3035");
-  s += planta(15.6, 0.3, 1.3) + planta(0.3, 0.3, 1.1) + planta(15.6, 9.2, 1.2);
+  s += planta(L - 0.9, 0.3, 1.3) + planta(0.3, 0.3, 1.1) + planta(L - 0.9, 9.2, 1.2);
   // puestos de atrás hacia adelante, los personajes (que se mueven) y arriba de todo los carteles
   const orden = [...agentes].sort((a, b) => PUESTOS[a.id][0] + PUESTOS[a.id][1] - (PUESTOS[b.id][0] + PUESTOS[b.id][1]));
   s += orden.map(puestoFijo).join("") + `<g id="actores" style="pointer-events:none"></g>` + orden.map(cartelPuesto).join("");
@@ -1343,6 +1346,52 @@ async function fichaAgente(o, id) {
       for (const p of lista) $("#fPend", modal).append(tarjetaPropuesta(p, () => { cerrar(); ir("oficina"); }));
     }
   }
+}
+
+// ---------- seguridad
+const NOMBRE_CHEQUEO = { disponible: "Disponibilidad", https: "HTTPS", encabezados: "Encabezados de seguridad", version: "Versión expuesta", certificado: "Certificado SSL",
+  archivos: "Archivos expuestos", email: "Email del dominio (SPF/DMARC)", secretos: "Claves en el repositorio", accesos: "Intentos de acceso", invitaciones: "Invitaciones", conexiones: "Conexiones" };
+
+async function verSeguridad() {
+  const v = $("#vista");
+  v.innerHTML = `<div class="fila" style="margin-bottom:12px">
+      <select id="sCliente" style="max-width:260px" ${yo.rol === "agencia" ? "" : "hidden"}>${opcionesClientes(yo.cliente_id || clientes[0]?.id)}</select>
+      <button class="b prim" id="sRevisar">Revisar ahora</button>
+      <span class="meta" style="color:var(--suave)">Chequeos pasivos sobre tus propios sitios: cada 15 min, cada hora y uno profundo por día.</span></div>
+    <div id="sCuerpo"></div>`;
+  const cli = () => $("#sCliente").value;
+  $("#sCliente").onchange = () => cargar();
+  $("#sRevisar").onclick = () => conBoton($("#sRevisar"), async () => { const r = await api("seguridad/revisar", { method: "POST", body: { cliente: cli() } }); aviso(r.nota); cargar(); });
+  async function cargar() {
+    const { activos, hallazgos, puntaje } = await api("seguridad?cliente=" + encodeURIComponent(cli()));
+    const color = puntaje >= 85 ? "var(--ok)" : puntaje >= 60 ? "var(--aviso)" : "var(--peligro)";
+    const icono = { critico: "🔴", aviso: "🟡", ok: "🟢" };
+    $("#sCuerpo").innerHTML = `
+      <div class="grilla" style="margin-bottom:16px">
+        <div class="tarjeta" style="margin:0"><div class="meta" style="color:var(--suave)">Puntaje de seguridad</div><div style="font-size:34px;font-weight:800;color:${color}">${puntaje}/100</div></div>
+        <div class="tarjeta" style="margin:0"><div class="meta" style="color:var(--suave)">Críticos</div><div style="font-size:34px;font-weight:800">${hallazgos.filter((h) => h.nivel === "critico").length}</div></div>
+        <div class="tarjeta" style="margin:0"><div class="meta" style="color:var(--suave)">Avisos</div><div style="font-size:34px;font-weight:800">${hallazgos.filter((h) => h.nivel === "aviso").length}</div></div>
+      </div>
+      <div class="tarjeta"><h2>Hallazgos</h2>${hallazgos.length ? hallazgos.map((h) => `<details style="border-bottom:1px solid var(--borde);padding:8px 0" ${h.nivel !== "ok" ? "open" : ""}>
+          <summary style="cursor:pointer">${icono[h.nivel]} <b>${esc(NOMBRE_CHEQUEO[h.chequeo] || h.chequeo)}</b> · <span class="meta">${esc(h.activo)}</span></summary>
+          <p style="margin:6px 0 0 24px">${esc(h.detalle)}</p>
+          ${h.nivel !== "ok" && h.como ? `<p class="meta" style="margin:4px 0 0 24px;color:var(--suave)"><b>Cómo arreglarlo:</b> ${esc(h.como)}</p>` : ""}
+          <p class="meta" style="margin:4px 0 0 24px;color:var(--suave)">Desde ${esc(h.primera_vez)} UTC · último chequeo ${esc(h.ultima_vez)} UTC</p></details>`).join("")
+        : '<p class="vacio">Todavía no hay resultados: agregá tus sitios y tocá "Revisar ahora".</p>'}</div>
+      <div class="tarjeta"><h2>Sitios vigilados</h2>
+        <p class="meta" style="color:var(--suave)">Agregá solo sitios que sean tuyos (tu web, subdominios, sistemas). El agente no ataca nada: solo mira lo que cualquiera podría ver.</p>
+        <table><tbody>${activos.map((a) => `<tr><td><b>${esc(a.nombre || "")}</b><br><a href="${esc(a.url)}" target="_blank" rel="noopener" class="meta">${esc(a.url)}</a></td>
+          <td>${a.fallas ? "🔴 caído" : a.ms != null ? "🟢 " + a.ms + " ms" : "…"}</td><td class="meta">${esc(a.ultimo_chequeo || "")} UTC</td>
+          <td><button class="b peligro" data-borrar="${esc(a.id)}">Quitar</button></td></tr>`).join("")}</tbody></table>
+        <div class="fila" style="margin-top:10px"><input id="sNombre" placeholder="Nombre (ej. Mi web)" style="max-width:200px"><input id="sUrl" placeholder="https://misitio.com" style="flex:1"><button class="b prim" id="sAgregar">Agregar</button></div></div>`;
+    $("#sAgregar").onclick = () => conBoton($("#sAgregar"), async () => { await api("seguridad/activos", { method: "POST", body: { cliente: cli(), url: $("#sUrl").value, nombre: $("#sNombre").value } }); aviso("Agregado y revisado"); cargar(); });
+    $("#sCuerpo").querySelectorAll("[data-borrar]").forEach((b) => (b.onclick = () => conBoton(b, async () => {
+      if (!confirm("¿Dejar de vigilar este sitio?")) return;
+      await api("seguridad/activos/" + b.dataset.borrar, { method: "DELETE" });
+      cargar();
+    })));
+  }
+  await cargar();
 }
 
 // ---------- ayuda (guía para clientes)

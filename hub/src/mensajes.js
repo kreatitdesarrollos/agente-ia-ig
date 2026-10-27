@@ -4,6 +4,7 @@
 // según el cliente, se aprueba por Telegram/panel o se envía sola.
 
 import { IG_API, igGet, gemini, registrar, notificar, destinatarios, tg, descifrar, hex } from "./comun.js";
+import { contarIntento } from "./seguridad.js";
 
 // ---------------------------------------------------------------- webhook de Instagram
 
@@ -18,7 +19,10 @@ export async function webhookInstagram(req, env, ctx) {
   }
 
   const cuerpo = await req.text();
-  if (!(await firmaValida(env, cuerpo, req.headers.get("X-Hub-Signature-256")))) return new Response("no", { status: 403 });
+  if (!(await firmaValida(env, cuerpo, req.headers.get("X-Hub-Signature-256")))) {
+    await contarIntento(env, "webhook");
+    return new Response("no", { status: 403 });
+  }
   const datos = JSON.parse(cuerpo);
   for (const entrada of datos.entry || []) {
     for (const ev of entrada.messaging || []) {

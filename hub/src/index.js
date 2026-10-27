@@ -22,6 +22,7 @@ import {
   crearPublicoInstagram, actualizarPublicoLeads,
 } from "./anuncios.js";
 import { estadoOficina } from "./oficina.js";
+import { contarIntento, chequearSitios, chequeosInternos, chequeoDiario, apiSeguridadAgente, apiPanelSeguridad } from "./seguridad.js";
 import {
   apiProspector, paginaBajaFrio, aprobarLote, ejecutarProspecto, prospeccionProgramada, apiPanelProspeccion, otraProspecto,
 } from "./prospeccion.js";
@@ -77,7 +78,10 @@ async function rutear(req, env, ctx) {
   }
 
   if (ruta.startsWith("/api/agente/")) {
-    if (req.headers.get("X-Clave") !== (await claveAgente(env))) return new Response("no", { status: 403 });
+    if (req.headers.get("X-Clave") !== (await claveAgente(env))) {
+      await contarIntento(env, "api");
+      return new Response("no", { status: 403 });
+    }
     return apiAgente(req, env, ctx, ruta.slice("/api/agente/".length), url);
   }
 
@@ -107,6 +111,7 @@ const SIN_PERMISO = () => Response.json({ error: "no tenés acceso a ese cliente
 
 async function webhookTelegram(req, env, ctx) {
   if (req.headers.get("X-Telegram-Bot-Api-Secret-Token") !== (await claveAgente(env))) {
+    await contarIntento(env, "webhook");
     return new Response("no", { status: 403 });
   }
   const u = await req.json();
@@ -431,6 +436,7 @@ async function apiAgente(req, env, ctx, ruta, url) {
     return Response.json({ ok: true, id });
   }
 
+  if (ruta.startsWith("seguridad/")) return apiSeguridadAgente(req, env, ruta.slice("seguridad/".length));
   if (ruta.startsWith("prospeccion/")) return apiProspector(req, env, ruta.slice("prospeccion/".length), url);
 
   if (ruta === "investigacion" && req.method === "GET") {
@@ -803,6 +809,8 @@ async function apiPanel(req, env, ctx, yo, ruta, url) {
     return Response.json(results);
   }
 
+  const seguridad = await apiPanelSeguridad(req, env, yo, puede, ruta, url);
+  if (seguridad) return seguridad;
   const prospeccion = await apiPanelProspeccion(req, env, yo, puede, ruta, url);
   if (prospeccion) return prospeccion;
 
@@ -905,7 +913,10 @@ async function login(req, env) {
   const u = await env.DB.prepare(
     "SELECT u.id FROM usuarios u JOIN codigos c ON c.usuario_id = u.id WHERE u.usuario = ? AND u.activo = 1 AND c.codigo = ? AND c.vence > datetime('now')"
   ).bind(String(usuario || "").trim().toLowerCase(), String(codigo || "").trim()).first();
-  if (!u) return Response.json({ error: "código incorrecto o vencido" }, { status: 401 });
+  if (!u) {
+    await contarIntento(env, "login");
+    return Response.json({ error: "código incorrecto o vencido" }, { status: 401 });
+  }
   await env.DB.prepare("DELETE FROM codigos WHERE usuario_id = ?").bind(u.id).run();
   const token = crypto.randomUUID() + crypto.randomUUID();
   await env.DB.prepare("INSERT INTO sesiones (token, usuario_id, vence) VALUES (?, ?, datetime('now', '+30 days'))").bind(token, u.id).run();
@@ -974,6 +985,11 @@ async function tareasProgramadas(env) {
   await nutricionPendiente(env);
   await sincronizarAdsSiguiente(env);
   await prospeccionProgramada(env);
+
+  // 5. seguridad: sitios cada 15 min, el hub por dentro cada hora y el chequeo profundo una vez por día
+  await chequearSitios(env);
+  await chequeosInternos(env);
+  await chequeoDiario(env);
   await informesSemanales(env);
   await investigacionesSemanales(env);
 

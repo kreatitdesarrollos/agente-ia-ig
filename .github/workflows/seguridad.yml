@@ -1,0 +1,31 @@
+name: Seguridad
+
+# Chequeo diario profundo. Lo dispara el hub todas las mañanas (o "Revisar ahora" en el panel).
+on:
+  workflow_dispatch:
+    inputs:
+      cliente:
+        description: "id del cliente (vacío = todos)"
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  seguridad:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      HUB_URL: ${{ vars.HUB_URL || 'https://kreatit-portero.federosciano.workers.dev' }}
+      CLIENTE: ${{ inputs.cliente }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # todo el historial, para encontrar claves en commits viejos
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python seguridad.py "$CLIENTE"

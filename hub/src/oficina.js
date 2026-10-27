@@ -21,6 +21,10 @@ const AGENTES = [
     eventos: ["investigando", "investigacion"], errores: /investiga/i },
   { id: "trafficker", nombre: "Trafficker", tarea: "Arma y mide los anuncios", propuestas: ["anuncio"],
     eventos: ["anuncio"], errores: /campaña|anuncio/i },
+  { id: "prospector", nombre: "Prospector", tarea: "Busca negocios y les escribe propuestas", propuestas: ["prospecto"],
+    eventos: ["prospeccion"], errores: /prospector|prospección/i },
+  { id: "seguridad", nombre: "Seguridad", tarea: "Vigila la seguridad de los sistemas", propuestas: [],
+    eventos: ["seguridad"], errores: /^$/ },
 ];
 
 const EN_CURSO = { generando: "propuesta", investigando: "investigacion" }; // evento de inicio → evento que lo termina
@@ -53,9 +57,20 @@ export async function estadoOficina(env, clienteId) {
       proxima: c.ig_token ? `Informe semanal: lunes 9:30 · midió por última vez ${c.ig_sincronizado ? "hace " + Math.round(hace(c.ig_sincronizado)) + " min" : "nunca"}` : "Esperando que conectes Instagram" },
     investigador: { dato: `${await contar("SELECT COUNT(*) n FROM informes WHERE cliente_id = ? AND tipo = 'mercado'")} investigaciones`,
       proxima: JSON.parse(c.investigacion || "{}").temas?.length ? "Investigación semanal: miércoles 9:30" : "Cargá temas en Investigación para que arranque" },
+    prospector: { dato: `${await contar("SELECT COUNT(*) n FROM envios_frio WHERE cliente_id = ? AND estado = 'enviado'")} propuestas enviadas · ${await contar("SELECT COUNT(*) n FROM prospectos WHERE cliente_id = ? AND estado = 'respondio'")} respondieron`,
+      proxima: c.prospeccion_correo ? "Envíos a las 10 y a las 16 (días hábiles)" : "Esperando que configures la casilla de prospección" },
+    seguridad: { dato: `${await contar("SELECT COUNT(*) n FROM seguridad_activos WHERE cliente_id = ?")} sitios vigilados · ${await contar("SELECT COUNT(*) n FROM seguridad_hallazgos WHERE cliente_id = ? AND nivel = 'aviso'")} avisos`,
+      proxima: "Revisa los sitios cada 15 minutos y hace un chequeo profundo cada mañana" },
     trafficker: { dato: `${await contar("SELECT COUNT(*) n FROM campanas WHERE cliente_id = ? AND estado = 'ACTIVE'")} campañas activas`,
       proxima: c.ads_token ? "Mide las campañas cada 3 horas" : "Esperando que conectes la cuenta publicitaria" },
   };
+
+  // seguridad: crítico abierto = problema; si revisó hace poco = trabajando (vigila todo el tiempo)
+  const criticos = (await env.DB.prepare("SELECT activo, chequeo FROM seguridad_hallazgos WHERE cliente_id = ? AND nivel = 'critico'").bind(clienteId).all()).results;
+  const revisado = await env.DB.prepare("SELECT MAX(ultimo_chequeo) AS t FROM seguridad_activos WHERE cliente_id = ?").bind(clienteId).first();
+  const estadoSeguridad = criticos.length
+    ? { estado: "error", globo: `Hay ${criticos.length} problema${criticos.length > 1 ? "s" : ""} crítico${criticos.length > 1 ? "s" : ""}: ${criticos.map((x) => x.chequeo + " en " + x.activo).join(", ")}`.slice(0, 140) }
+    : revisado?.t && hace(revisado.t) < 20 ? { estado: "trabajando", globo: "Vigilando los sitios: todo en orden" } : { estado: "descanso", globo: "" };
 
   const agentes = AGENTES.map((a) => {
     const propios = eventos.filter((e) => a.eventos.includes(e.tipo));
@@ -67,6 +82,8 @@ export async function estadoOficina(env, clienteId) {
     const pend = pendientes.filter((p) => a.propuestas.includes(p.tipo)).reduce((t, p) => t + p.n, 0);
     let estado = "descanso";
     let globo = "";
+    if (a.id === "seguridad") return { ...a, errores: undefined, eventos: undefined, ...estadoSeguridad, pendientes: 0, ...datos[a.id],
+      historial: propios.slice(0, 8) };
     if (error) { estado = "error"; globo = "Tuve un problema: " + error.detalle; }
     else if (enCurso) { estado = "trabajando"; globo = (ultimo.tipo === "investigando" ? "Investigando: " : "Escribiendo: ") + (ultimo.detalle || "…"); }
     else if (pend) { estado = "esperando"; globo = `Tengo ${pend} para que apruebes`; }
