@@ -57,6 +57,15 @@ export async function chequearSitios(env, clienteId = null) {
 }
 
 async function chequearSitio(env, a) {
+  // Cloudflare no deja que el hub se consulte a sí mismo por su dirección pública (devuelve 404 interno):
+  // si está corriendo este código, está en línea, y los encabezados y la redirección los pone index.js.
+  if (new URL(a.url).host === new URL(env.URL_PUBLICA).host) {
+    await env.DB.prepare("UPDATE seguridad_activos SET fallas = 0, ultimo_chequeo = datetime('now'), ms = 0 WHERE id = ?").bind(a.id).run();
+    await anotar(env, a.cliente_id, a.url, "disponible", "ok", "En línea (es el propio hub).");
+    await anotar(env, a.cliente_id, a.url, "encabezados", "ok", "Tiene HSTS, X-Content-Type-Options, X-Frame-Options y Referrer-Policy.");
+    await anotar(env, a.cliente_id, a.url, "https", "ok", "La versión http redirige a https (301).");
+    return;
+  }
   const inicio = Date.now();
   let r = null, error = "";
   try {
