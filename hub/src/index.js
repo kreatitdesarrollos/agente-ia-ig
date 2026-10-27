@@ -21,6 +21,7 @@ import {
   guardarAds, probarAds, proponerCampana, vistaPreviaAnuncio, ejecutarAnuncio, cambiarEstadoCampana, sincronizarAdsSiguiente,
   crearPublicoInstagram, actualizarPublicoLeads,
 } from "./anuncios.js";
+import { estadoOficina } from "./oficina.js";
 import { guardarInvestigacion, investigacionesSemanales, generarIdea } from "./investigacion.js";
 import {
   sincronizarSiguiente, proponerRespuestas, vistaPreviaRespuesta, ejecutarRespuesta, aprendizajes, informesSemanales, generarInforme,
@@ -743,6 +744,7 @@ async function apiPanel(req, env, ctx, yo, ruta, url) {
   if (ruta === "investigacion/ahora" && metodo === "POST") {
     const b = await cuerpo();
     if (!puede(yo, b.cliente)) return SIN_PERMISO();
+    await registrar(env, b.cliente, "investigando", "noticias del rubro y la competencia");
     await despacharWorkflow(env, "investigar.yml", { cliente: b.cliente });
     return Response.json({ ok: true });
   }
@@ -752,6 +754,12 @@ async function apiPanel(req, env, ctx, yo, ruta, url) {
     if (!inf || !puede(yo, inf.cliente_id)) return SIN_PERMISO();
     await generarIdea(env, ide[1], Number(ide[2]), null);
     return Response.json({ ok: true });
+  }
+
+  if (ruta === "oficina" && metodo === "GET") {
+    const cliente = url.searchParams.get("cliente") || yo.cliente_id;
+    if (!puede(yo, cliente)) return SIN_PERMISO();
+    return Response.json(await estadoOficina(env, cliente));
   }
 
   if (ruta === "comentarios" && metodo === "GET") {
@@ -939,7 +947,8 @@ async function tareasProgramadas(env) {
 
 // ---------------------------------------------------------------- GitHub (generador)
 
-function despacharGenerar(env, cliente, pedido, producto) {
+async function despacharGenerar(env, cliente, pedido, producto) {
+  await registrar(env, cliente, "generando", pedido || producto || "el post del día");
   return despacharWorkflow(env, "generar.yml", { cliente, pedido, producto });
 }
 

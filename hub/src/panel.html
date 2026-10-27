@@ -51,6 +51,37 @@
   #login { max-width: 360px; margin: 12vh auto; }
   #aviso { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--texto); color: var(--fondo); padding: 10px 16px; border-radius: 8px; display: none; z-index: 5; max-width: calc(100% - 32px); }
   h2 { font-size: 16px; margin: 0 0 8px; }
+  /* ---- oficina ---- */
+  .piso { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; padding: 14px; border-radius: 14px;
+    background-color: var(--piso1); background-image: linear-gradient(45deg, var(--piso2) 25%, transparent 25%, transparent 75%, var(--piso2) 75%),
+    linear-gradient(45deg, var(--piso2) 25%, transparent 25%, transparent 75%, var(--piso2) 75%); background-size: 32px 32px; background-position: 0 0, 16px 16px; }
+  :root { --piso1: #e9e4f5; --piso2: #e1dbef; }
+  @media (prefers-color-scheme: dark) { :root { --piso1: #1f2030; --piso2: #23253a; } }
+  .puesto { background: var(--tarjeta); border: 1px solid var(--borde); border-radius: 12px; padding: 10px; cursor: pointer; position: relative; transition: transform .15s; }
+  .puesto:hover { transform: translateY(-2px); }
+  .puesto svg { width: 100%; height: auto; display: block; image-rendering: pixelated; }
+  .globo { position: relative; background: var(--fondo); border: 1px solid var(--borde); border-radius: 10px; padding: 6px 9px; font-size: 12px; min-height: 34px; margin-bottom: 6px; color: var(--texto); }
+  .globo:after { content: ""; position: absolute; left: 34px; bottom: -6px; width: 10px; height: 10px; background: var(--fondo); border-right: 1px solid var(--borde); border-bottom: 1px solid var(--borde); transform: rotate(45deg); }
+  .cartel { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-top: 6px; }
+  .cartel b { font-size: 13px; }
+  .estado { font-size: 11px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--borde); white-space: nowrap; }
+  .estado.trabajando { border-color: var(--ok); color: var(--ok); }
+  .estado.esperando { border-color: var(--aviso); color: var(--aviso); }
+  .estado.error { border-color: var(--peligro); color: var(--peligro); }
+  .insignia { position: absolute; top: -8px; right: -8px; background: var(--aviso); color: #fff; border-radius: 99px; min-width: 24px; height: 24px; display: grid; place-items: center; font-size: 12px; font-weight: 700; }
+  .trabajando .brazo-i { animation: tecleo .35s infinite; } .trabajando .brazo-d { animation: tecleo .35s infinite .17s; }
+  .trabajando .linea { animation: parpadeo 1.2s infinite; } .trabajando .linea:nth-child(2n) { animation-delay: .4s; }
+  .esperando .mano { animation: saludo 1s infinite; transform-origin: 46px 34px; }
+  .descanso .vapor path { animation: vapor 2.4s infinite; } .descanso .vapor path:nth-child(2) { animation-delay: .8s; }
+  .descanso .cuerpo { animation: respirar 3s infinite; } .error .alerta { animation: parpadeo .8s infinite; }
+  @keyframes tecleo { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
+  @keyframes parpadeo { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+  @keyframes saludo { 0%, 100% { transform: rotate(0); } 50% { transform: rotate(14deg); } }
+  @keyframes vapor { 0% { opacity: 0; transform: translateY(0); } 40% { opacity: .9; } 100% { opacity: 0; transform: translateY(-7px); } }
+  @keyframes respirar { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(1px); } }
+  @media (prefers-reduced-motion: reduce) { .puesto * { animation: none !important; } }
+  .modal { position: fixed; inset: 0; background: #0008; display: grid; place-items: start center; padding: 6vh 16px; z-index: 6; overflow-y: auto; }
+  .modal > div { background: var(--tarjeta); border-radius: 14px; padding: 18px; width: min(720px, 100%); }
   h3 { font-size: 14px; margin: 16px 0 8px; }
 </style>
 </head>
@@ -73,7 +104,8 @@
   <header>
     <h1>Panel</h1>
     <nav>
-      <button data-vista="propuestas" class="activo">Para aprobar</button>
+      <button data-vista="oficina" class="activo">Oficina</button>
+      <button data-vista="propuestas">Para aprobar</button>
       <button data-vista="historial">Historial</button>
       <button data-vista="generar">Generar</button>
       <button data-vista="resultados">Resultados</button>
@@ -148,10 +180,12 @@ $("#salir").onclick = async () => { await api("salir", { method: "POST" }); most
 
 // ---------- navegación
 document.querySelectorAll("nav button").forEach((b) => (b.onclick = () => ir(b.dataset.vista)));
+let relojOficina = null;
 function ir(vista) {
+  clearInterval(relojOficina);
   document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("activo", b.dataset.vista === vista));
   try { localStorage.setItem("vista", vista); } catch {}
-  ({ propuestas: () => verPropuestas("pendiente"), historial: () => verPropuestas("todas"), generar: verGenerar, resultados: verResultados, investigacion: verInvestigacion, comentarios: verComentarios, resenas: verResenas, leads: verLeads, anuncios: verAnuncios, ayuda: verAyuda, clientes: verClientes, actividad: verActividad })[vista]();
+  ({ propuestas: () => verPropuestas("pendiente"), historial: () => verPropuestas("todas"), generar: verGenerar, resultados: verResultados, investigacion: verInvestigacion, comentarios: verComentarios, resenas: verResenas, leads: verLeads, anuncios: verAnuncios, ayuda: verAyuda, oficina: verOficina, clientes: verClientes, actividad: verActividad })[vista]();
 }
 
 async function iniciar() {
@@ -165,7 +199,7 @@ async function iniciar() {
   $('nav [data-vista="clientes"]').textContent = yo.rol === "agencia" ? "Clientes" : "Mi cuenta";
   const ig = decodeURIComponent((location.hash.match(/ig=([^&]+)/) || [])[1] || "");
   if (ig) { aviso(ig); history.replaceState(null, "", location.pathname); try { localStorage.setItem("vista", "clientes"); } catch {} }
-  let vista = "propuestas";
+  let vista = "oficina";
   try { vista = localStorage.getItem("vista") || vista; } catch {}
   ir(vista);
 }
@@ -835,6 +869,108 @@ async function verEquipo(el, cliente) {
     aviso("Listo: copiá el link de invitación y pasáselo");
     verEquipo(el, cliente);
   });
+}
+
+// ---------- oficina: los agentes de IA trabajando
+const ASPECTO = {
+  redactor: { camisa: "#e76f51", pelo: "#3b2a20", piel: "#f1c27d" },
+  community: { camisa: "#2a9d8f", pelo: "#e9c46a", piel: "#ffdbac" },
+  vendedor: { camisa: "#264653", pelo: "#6d4c41", piel: "#c68642" },
+  atencion: { camisa: "#f4a261", pelo: "#1d1d1d", piel: "#e0ac69" },
+  emails: { camisa: "#8e7dbe", pelo: "#a0522d", piel: "#ffdbac" },
+  analista: { camisa: "#457b9d", pelo: "#2b2b2b", piel: "#8d5524" },
+  investigador: { camisa: "#6a994e", pelo: "#c9c9c9", piel: "#f1c27d" },
+  trafficker: { camisa: "#d62828", pelo: "#ffb703", piel: "#e0ac69" },
+};
+const ICONO_AGENTE = { redactor: "✍️", community: "💬", vendedor: "🤝", atencion: "⭐", emails: "✉️", analista: "📊", investigador: "🔎", trafficker: "📣" };
+const TEXTO_ESTADO = { trabajando: "trabajando", esperando: "esperando tu OK", descanso: "tomando un café", error: "con un problema" };
+
+// Escena pixel art de un puesto: personaje, escritorio, monitor y taza. Las animaciones dependen del estado.
+function escena(a) {
+  const { camisa, pelo, piel } = ASPECTO[a.id];
+  const r = (x, y, w, h, c, extra = "") => `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${c}" ${extra}/>`;
+  const pantalla = a.estado === "trabajando" ? "#1e3a5f" : a.estado === "error" ? "#5f1e1e" : "#20232f";
+  const lineas = a.estado === "trabajando" ? [0, 1, 2, 3].map((i) => r(76, 27 + i * 5, 10 + ((i * 7) % 12), 2, "#7fd1ff", 'class="linea"')).join("") :
+    a.estado === "descanso" ? r(81, 32, 8, 8, "#3a3f55") : "";
+  const brazoD = a.estado === "esperando"
+    ? `<g class="mano">${r(46, 22, 5, 14, camisa)}${r(46, 18, 5, 5, piel)}</g>`
+    : a.estado === "descanso" ? `${r(42, 40, 5, 8, camisa)}${r(38, 40, 6, 5, piel)}${r(36, 34, 7, 7, "#fff")}${r(37, 35, 5, 5, "#8b5a2b")}`
+    : `<g class="brazo-d">${r(42, 46, 6, 10, camisa)}${r(43, 54, 5, 3, piel)}</g>`;
+  return `<svg viewBox="0 0 120 92" shape-rendering="crispEdges" aria-hidden="true">
+    ${r(0, 0, 120, 92, "transparent")}
+    ${r(15, 26, 36, 32, "#555b6e")}${r(17, 28, 32, 28, "#6c7287")}
+    <g class="cuerpo">
+      ${r(20, 34, 26, 22, camisa)}${r(30, 34, 6, 4, piel)}
+      ${r(22, 14, 20, 20, piel)}${r(20, 12, 24, 7, pelo)}${r(20, 14, 4, 10, pelo)}
+      ${r(27, 22, 3, 3, "#222")}${r(35, 22, 3, 3, "#222")}${r(29, 29, 6, 2, a.estado === "error" ? "#7a1f1f" : "#a0522d")}
+      ${a.estado === "error" ? r(42, 18, 2, 4, "#7fd1ff") : ""}
+      <g class="brazo-i">${r(16, 46, 6, 10, camisa)}${r(16, 54, 5, 3, piel)}</g>
+      ${brazoD}
+    </g>
+    ${r(4, 56, 112, 7, "#a47148")}${r(4, 63, 112, 3, "#7f5539")}${r(10, 66, 5, 22, "#7f5539")}${r(105, 66, 5, 22, "#7f5539")}
+    ${r(14, 53, 26, 3, "#d9d9d9")}
+    ${r(70, 22, 36, 26, "#2b2d3a")}${r(72, 24, 32, 22, pantalla)}${lineas}${r(85, 48, 6, 5, "#2b2d3a")}${r(80, 53, 16, 3, "#2b2d3a")}
+    ${a.estado !== "descanso" ? r(56, 48, 7, 8, "#fff") + r(57, 49, 5, 5, "#8b5a2b") : ""}
+    ${a.estado === "descanso" ? `<g class="vapor" fill="none" stroke="#bbb" stroke-width="1.5"><path d="M38 31 q2 -3 0 -6"/><path d="M41 31 q2 -3 0 -6"/></g>` : ""}
+    ${a.estado === "error" ? `<g class="alerta">${r(50, 2, 12, 12, "#d62828")}${r(55, 4, 2, 5, "#fff")}${r(55, 10, 2, 2, "#fff")}</g>` : ""}
+  </svg>`;
+}
+
+async function verOficina() {
+  const v = $("#vista");
+  v.innerHTML = `<div class="fila" style="margin-bottom:12px">
+      <select id="oCliente" style="max-width:260px" ${yo.rol === "agencia" ? "" : "hidden"}>${opcionesClientes(yo.cliente_id || clientes[0]?.id)}</select>
+      <span class="meta" id="oTitulo" style="color:var(--suave)"></span></div>
+    <div class="piso" id="oPiso"></div>
+    <p class="meta" style="color:var(--suave);margin-top:10px">Tocá a un agente para ver en qué está, qué hizo y qué tiene para que apruebes. Se actualiza sola.</p>`;
+  $("#oCliente").onchange = () => cargar();
+  let ultimo = null;
+  async function cargar() {
+    let o;
+    try { o = await api("oficina?cliente=" + encodeURIComponent($("#oCliente").value)); } catch { return; }
+    ultimo = o;
+    $("#oTitulo").textContent = `Oficina de ${o.cliente.nombre} · ${o.hora} hs · ${o.agentes.filter((a) => a.estado === "trabajando").length} trabajando ahora`;
+    $("#oPiso").innerHTML = o.agentes.map((a) => `<div class="puesto ${a.estado}" data-agente="${a.id}" role="button" tabindex="0" aria-label="${esc(a.nombre)}: ${esc(TEXTO_ESTADO[a.estado])}">
+      ${a.pendientes ? `<span class="insignia">${a.pendientes}</span>` : ""}
+      <div class="globo">${esc(a.globo || a.tarea)}</div>
+      ${escena(a)}
+      <div class="cartel"><b>${ICONO_AGENTE[a.id]} ${esc(a.nombre)}</b><span class="estado ${a.estado}">${esc(TEXTO_ESTADO[a.estado])}</span></div>
+    </div>`).join("");
+    $("#oPiso").querySelectorAll("[data-agente]").forEach((el) => {
+      el.onclick = () => fichaAgente(ultimo, el.dataset.agente);
+      el.onkeydown = (e) => (e.key === "Enter" || e.key === " ") && fichaAgente(ultimo, el.dataset.agente);
+    });
+  }
+  await cargar();
+  relojOficina = setInterval(cargar, 20000);
+}
+
+async function fichaAgente(o, id) {
+  const a = o.agentes.find((x) => x.id === id);
+  const modal = document.createElement("div");
+  modal.className = "modal";
+  modal.innerHTML = `<div role="dialog" aria-label="${esc(a.nombre)}">
+    <div class="fila" style="justify-content:space-between"><h2>${ICONO_AGENTE[a.id]} ${esc(a.nombre)} <span class="estado ${a.estado}">${esc(TEXTO_ESTADO[a.estado])}</span></h2>
+      <button class="b" data-cerrar>Cerrar</button></div>
+    <p class="meta" style="color:var(--suave)">${esc(a.tarea)} · ${esc(a.dato)}</p>
+    ${a.globo ? `<div class="globo" style="margin:10px 0 14px">${esc(a.globo)}</div>` : ""}
+    <p><b>Próxima tarea:</b> ${esc(a.proxima)}</p>
+    <div id="fPend"></div>
+    <h3>Lo último que hizo</h3>
+    ${a.historial.length ? `<table><tbody>${a.historial.map((h) => `<tr><td class="meta" style="white-space:nowrap">${esc(h.creado)} UTC</td><td><span class="chip ${h.tipo === "error" ? "error" : ""}">${esc(h.tipo)}</span></td><td>${esc(h.detalle)}</td></tr>`).join("")}</tbody></table>` : '<p class="vacio">Todavía no hizo nada en los últimos 30 días.</p>'}
+  </div>`;
+  const cerrar = () => modal.remove();
+  modal.onclick = (e) => e.target === modal && cerrar();
+  $("[data-cerrar]", modal).onclick = cerrar;
+  document.addEventListener("keydown", function esc_(e) { if (e.key === "Escape") { cerrar(); document.removeEventListener("keydown", esc_); } });
+  document.body.append(modal);
+  if (a.propuestas.length) {
+    const lista = (await api(`propuestas?estado=pendiente&cliente=${encodeURIComponent(o.cliente.id)}`)).filter((p) => a.propuestas.includes(p.tipo));
+    if (lista.length) {
+      $("#fPend", modal).innerHTML = "<h3>Para que apruebes</h3>";
+      for (const p of lista) $("#fPend", modal).append(tarjetaPropuesta(p, () => { cerrar(); ir("oficina"); }));
+    }
+  }
 }
 
 // ---------- ayuda (guía para clientes)

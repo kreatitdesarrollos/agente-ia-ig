@@ -36,6 +36,7 @@ export async function generarIdea(env, informeId, n, chat) {
   const idea = JSON.parse(inf?.datos || "{}").ideas?.[n];
   if (!idea) return chat && responder(env, chat, "No encontré esa idea.");
   if (chat) await responder(env, chat, `✨ Generando el post "${idea.titulo}"... (1 o 2 minutos)`);
+  await registrar(env, inf.cliente_id, "generando", idea.titulo);
   await despacharWorkflow(env, "generar.yml", { cliente: inf.cliente_id, pedido: `${idea.titulo}: ${idea.enfoque}`, producto: "" });
 }
 
@@ -49,6 +50,7 @@ export async function investigacionesSemanales(env) {
     const dia = new Intl.DateTimeFormat("en-US", { timeZone: c.zona, weekday: "short" }).format(new Date());
     if (dia !== "Wed" || hora < "09:30" || c.ultimo_mercado === fecha) continue;
     await env.DB.prepare("UPDATE clientes SET ultimo_mercado = ? WHERE id = ?").bind(fecha, c.id).run();
+    await registrar(env, c.id, "investigando", "la investigación semanal");
     await despacharWorkflow(env, "investigar.yml", { cliente: c.id });
     return;
   }
