@@ -39,18 +39,33 @@ const IG_PERMISOS = "instagram_business_basic,instagram_business_content_publish
 
 export default {
   async fetch(req, env, ctx) {
+    const url = new URL(req.url);
+    if (url.protocol === "http:") return Response.redirect(url.href.replace("http:", "https:"), 301);
+    let r;
     try {
-      return await rutear(req, env, ctx);
+      r = await rutear(req, env, ctx);
     } catch (e) {
       console.log("Error:", e.stack || e);
-      return Response.json({ error: String(e.message || e) }, { status: 500 });
+      r = Response.json({ error: String(e.message || e) }, { status: 500 });
     }
+    return conEncabezadosDeSeguridad(r);
   },
 
   async scheduled(evento, env, ctx) {
     ctx.waitUntil(tareasProgramadas(env));
   },
 };
+
+// Los que pide el agente de seguridad: solo https, sin adivinar tipos de archivo y sin poder meter el panel en un iframe ajeno.
+function conEncabezadosDeSeguridad(r) {
+  if (r.status === 101) return r;
+  const h = new Headers(r.headers);
+  h.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  h.set("X-Content-Type-Options", "nosniff");
+  h.set("X-Frame-Options", "DENY");
+  h.set("Referrer-Policy", "strict-origin-when-cross-origin");
+  return new Response(r.body, { status: r.status, statusText: r.statusText, headers: h });
+}
 
 async function rutear(req, env, ctx) {
   const url = new URL(req.url);
