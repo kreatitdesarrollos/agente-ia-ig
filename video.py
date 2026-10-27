@@ -244,6 +244,7 @@ Reglas: usá solo información de la marca; no inventes precios, premios ni cifr
     for tipo, contenido in (("vid", datos_video), ("img", portada.getvalue())):
         r = requests.put("{}/api/agente/archivo/{}:{}".format(HUB, tipo, vid_id), data=contenido, headers=CLAVE, timeout=180)
         r.raise_for_status()
+    __import__("time").sleep(20)  # que el archivo ya esté disponible en todo Cloudflare cuando Telegram lo vaya a buscar
     hub("/api/agente/video", json={
         "cliente_id": cliente_id, "id": vid_id, "titulo": plan["tema"],
         "datos": {"caption": plan["caption"], "hashtags": plan["hashtags"], "producto": producto, "pedido": pedido, "segundos": round(largo, 1)},

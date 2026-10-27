@@ -573,7 +573,8 @@ async function apiAgente(req, env, ctx, ruta, url) {
     const datos = { ...b.datos, ...(c.auto_publicar ? { auto_pendiente: true } : {}) };
     await env.DB.prepare("INSERT INTO propuestas (id, cliente_id, tipo, titulo, datos) VALUES (?, ?, 'video', ?, ?)").bind(id, c.id, b.titulo, JSON.stringify(datos)).run();
     await registrar(env, c.id, "video", `Reel listo: ${b.titulo}`);
-    if (!c.auto_publicar) await enviarVistaPrevia(env, id);
+    // si Telegram todavía no puede bajar el video, la propuesta queda igual y el cron reenvía la vista previa
+    if (!c.auto_publicar) await enviarVistaPrevia(env, id).catch((e) => console.log("vista previa del Reel:", e.message));
     return Response.json({ ok: true, id });
   }
 
@@ -1243,6 +1244,14 @@ async function tareasProgramadas(env) {
   await revisarPendientes(env, { aprobar: aprobarSegunTipo, enviarVistaPrevia });
   await publicarProgramadas(env, ejecutar);
   await resumenesDiarios(env);
+
+  // vistas previas que no llegaron a Telegram (por ejemplo, un Reel que Telegram no pudo bajar a tiempo): una por pasada
+  const sinAviso = await env.DB.prepare(
+    "SELECT p.id FROM propuestas p JOIN clientes c ON c.id = p.cliente_id WHERE p.estado = 'pendiente' AND p.tipo IN ('post', 'video', 'articulo') " +
+    "AND p.creado < datetime('now', '-3 minutes') AND p.creado > datetime('now', '-1 day') AND json_extract(p.datos, '$.auto_pendiente') IS NULL " +
+    "AND NOT EXISTS (SELECT 1 FROM mensajes_tg m WHERE m.propuesta_id = p.id) LIMIT 1"
+  ).first();
+  if (sinAviso) await enviarVistaPrevia(env, sinAviso.id).catch((e) => console.log("reenviar vista previa:", e.message));
 
   // 6. seguridad: sitios cada 15 min, el hub por dentro cada hora y el chequeo profundo una vez por día
   await chequearSitios(env);

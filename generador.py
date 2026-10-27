@@ -27,6 +27,8 @@ CLAVE = {"X-Clave": hashlib.sha256(os.environ.get("TELEGRAM_TOKEN", "").encode()
 def hub(ruta, **kwargs):
     metodo = "POST" if "json" in kwargs else "GET"
     r = requests.request(metodo, HUB + ruta, headers=CLAVE, timeout=120, **kwargs)
+    if not r.ok:
+        print("El hub respondió {}: {}".format(r.status_code, r.text[:500]), file=sys.stderr)
     r.raise_for_status()
     return r
 
