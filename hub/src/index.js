@@ -22,6 +22,8 @@ import {
   crearPublicoInstagram, actualizarPublicoLeads,
 } from "./anuncios.js";
 import { estadoOficina } from "./oficina.js";
+import { revisarPendientes, usarCorreccion } from "./revisor.js";
+import { armarResumen, resumenesDiarios } from "./gerente.js";
 import { contarIntento, chequearSitios, chequeosInternos, chequeoDiario, apiSeguridadAgente, apiPanelSeguridad } from "./seguridad.js";
 import {
   apiProspector, paginaBajaFrio, aprobarLote, ejecutarProspecto, prospeccionProgramada, apiPanelProspeccion, otraProspecto,
@@ -138,6 +140,14 @@ async function webhookTelegram(req, env, ctx) {
   if (u.callback_query) {
     const cb = u.callback_query;
     const [accion, id, extra] = cb.data.split(":");
+    if (accion === "corr") {
+      const p = await env.DB.prepare("SELECT cliente_id FROM propuestas WHERE id = ?").bind(id).first();
+      const ok = p && puede(yo, p.cliente_id);
+      const r = ok ? await usarCorreccion(env, id) : { error: "No tenés acceso" };
+      await tg(env, "answerCallbackQuery", { callback_query_id: cb.id, text: r.error || "✍️ Corrección aplicada" });
+      if (r.ok) ctx.waitUntil(enviarVistaPrevia(env, id));
+      return new Response("ok");
+    }
     if (accion === "lote") {
       const pr = await env.DB.prepare("SELECT cliente_id FROM prospecciones WHERE id = ?").bind(id).first();
       const ok = pr && puede(yo, pr.cliente_id);
@@ -189,6 +199,12 @@ async function comandoTelegram(env, yo, chat, texto, mensaje) {
   if (!yo) return responder(env, chat, "Este bot es privado. Si te invitaron, abrí el link de invitación que te pasaron.");
 
   if (base === "/start" || base === "/panel") return responder(env, chat, `Panel: ${env.URL_PUBLICA}/panel (usuario: ${yo.usuario})`);
+
+  if (base === "/resumen") {
+    let cliente = yo.rol === "agencia" ? env.CLIENTE_DEFAULT : yo.cliente_id;
+    if (resto[0]?.startsWith("@") && yo.rol === "agencia") cliente = resto[0].slice(1).toLowerCase();
+    return responder(env, chat, (await armarResumen(env, cliente)).slice(0, 4000));
+  }
 
   if (base === "/clientes" && yo.rol === "agencia") {
     const { results } = await env.DB.prepare("SELECT id, nombre, activo FROM clientes ORDER BY creado").all();
@@ -441,10 +457,10 @@ async function apiAgente(req, env, ctx, ruta, url) {
     await env.DB.prepare("INSERT INTO propuestas (id, cliente_id, tipo, titulo, datos) VALUES (?, ?, 'post', ?, ?)")
       .bind(id, c.id, b.titulo, JSON.stringify(b.datos)).run();
     await registrar(env, c.id, "propuesta", b.titulo);
-    if (c.auto_publicar) {
-      await notificar(env, c.id, `🤖 ${c.nombre} en modo automático: publicando "${b.titulo}"`);
-      await env.DB.prepare("UPDATE propuestas SET estado = 'aprobada' WHERE id = ?").bind(id).run();
-      ctx.waitUntil(publicar(env, id));
+    if (c.auto_publicar) { // sale solo cuando el revisor de calidad lo aprueba (en la próxima pasada del cron)
+      const datos = { ...b.datos, auto_pendiente: true };
+      await env.DB.prepare("UPDATE propuestas SET datos = ? WHERE id = ?").bind(JSON.stringify(datos), id).run();
+      await notificar(env, c.id, `🤖 ${c.nombre} en modo automático: "${b.titulo}" se publica en unos minutos, después de pasar por el revisor de calidad.`);
     } else {
       await enviarVistaPrevia(env, id);
     }
@@ -508,6 +524,12 @@ async function apiPanel(req, env, ctx, yo, ruta, url) {
     return Response.json(results.map((p) => ({ ...p, datos: JSON.parse(p.datos), resultado: JSON.parse(p.resultado || "{}") })));
   }
 
+  const corr = ruta.match(/^propuestas\/([\w-]+)\/corregir$/);
+  if (corr && metodo === "POST") {
+    const p = await env.DB.prepare("SELECT cliente_id FROM propuestas WHERE id = ?").bind(corr[1]).first();
+    if (!p || !puede(yo, p.cliente_id)) return SIN_PERMISO();
+    return Response.json(await usarCorreccion(env, corr[1]));
+  }
   const accion = ruta.match(/^propuestas\/([\w-]+)\/(aprobar|descartar|otra|reintentar)$/);
   if (accion && metodo === "POST") {
     const p = await env.DB.prepare("SELECT cliente_id FROM propuestas WHERE id = ?").bind(accion[1]).first();
@@ -808,6 +830,12 @@ async function apiPanel(req, env, ctx, yo, ruta, url) {
     return Response.json({ ok: true });
   }
 
+  if (ruta === "gerente" && metodo === "GET") {
+    const cliente = url.searchParams.get("cliente") || yo.cliente_id;
+    if (!puede(yo, cliente)) return SIN_PERMISO();
+    return Response.json({ texto: await armarResumen(env, cliente) });
+  }
+
   if (ruta === "oficina" && metodo === "GET") {
     const cliente = url.searchParams.get("cliente") || yo.cliente_id;
     if (!puede(yo, cliente)) return SIN_PERMISO();
@@ -1001,7 +1029,11 @@ async function tareasProgramadas(env) {
   await sincronizarAdsSiguiente(env);
   await prospeccionProgramada(env);
 
-  // 5. seguridad: sitios cada 15 min, el hub por dentro cada hora y el chequeo profundo una vez por día
+  // 5. revisor de calidad (antes de que apruebes, o antes de que salga solo) y resumen diario del gerente
+  await revisarPendientes(env, { ejecutar, enviarVistaPrevia });
+  await resumenesDiarios(env);
+
+  // 6. seguridad: sitios cada 15 min, el hub por dentro cada hora y el chequeo profundo una vez por día
   await chequearSitios(env);
   await chequeosInternos(env);
   await chequeoDiario(env);

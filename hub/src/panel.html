@@ -239,7 +239,25 @@ async function verPropuestas(estado) {
   await cargar();
 }
 
+// Cada tarjeta muestra además lo que dijo el revisor de calidad.
 function tarjetaPropuesta(p, recargar) {
+  const el = tarjetaSegunTipo(p, recargar);
+  const r = p.datos.revision;
+  if (p.estado === "pendiente") {
+    const caja = document.createElement("div");
+    caja.style.cssText = "margin-top:10px;padding:8px 10px;border-radius:8px;font-size:13px;border:1px solid var(--borde)";
+    caja.innerHTML = !r ? '<span class="meta">🔎 El revisor de calidad lo está leyendo…</span>'
+      : r.ok ? `<span style="color:var(--ok)">✅ Revisado: sin problemas${r.corregido ? " (con la corrección aplicada)" : ""}</span>`
+      : `<b style="color:var(--aviso)">⚠️ El revisor encontró:</b><ul style="margin:4px 0">${r.problemas.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` +
+        (r.sugerencia ? `<details><summary style="cursor:pointer">Ver corrección propuesta</summary><p style="white-space:pre-wrap">${esc(r.sugerencia)}</p></details><button class="b" data-corr>✍️ Usar corrección</button>` : "");
+    el.append(caja);
+    const b = caja.querySelector("[data-corr]");
+    if (b) b.onclick = () => conBoton(b, async () => { await api(`propuestas/${p.id}/corregir`, { method: "POST", body: {} }); aviso("Corrección aplicada"); recargar(); });
+  }
+  return el;
+}
+
+function tarjetaSegunTipo(p, recargar) {
   if (p.tipo === "respuesta") return tarjetaRespuesta(p, recargar);
   if (p.tipo === "mensaje") return tarjetaMensaje(p, recargar);
   if (p.tipo === "resena") return tarjetaResena(p, recargar);
@@ -1297,7 +1315,12 @@ async function verOficina() {
       <span class="meta" id="oTitulo" style="color:var(--suave)"></span></div>
     <div class="tarjeta" style="padding:8px;overflow:hidden" id="oSala"></div>
     <div class="tarjeta"><h2>Qué está haciendo cada uno</h2><div id="oLista"></div></div>
-    <p class="meta" style="color:var(--suave)">Tocá a un agente (en la sala o en la lista) para ver en qué está, qué hizo y qué tiene para que apruebes. Se actualiza sola.</p>`;
+    <p class="meta" style="color:var(--suave)">Tocá a un agente (en la sala o en la lista) para ver en qué está, qué hizo y qué tiene para que apruebes. Se actualiza sola.</p>
+    <div class="tarjeta"><div class="fila" style="justify-content:space-between"><h2>🧑‍💼 Resumen del gerente</h2><button class="b" id="oResumen">Pedir resumen</button></div>
+      <p class="meta" style="color:var(--suave)">Te llega todas las mañanas a las 8:30 por Telegram (o escribí /resumen).</p><div id="oTextoResumen" style="white-space:pre-wrap"></div></div>`;
+  $("#oResumen").onclick = () => conBoton($("#oResumen"), async () => {
+    $("#oTextoResumen").textContent = (await api("gerente?cliente=" + encodeURIComponent($("#oCliente").value))).texto;
+  });
   $("#oCliente").onchange = () => cargar();
   let ultimo = null;
   const abrir = (el) => {
