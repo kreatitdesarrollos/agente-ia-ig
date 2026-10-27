@@ -57,8 +57,9 @@
     linear-gradient(45deg, var(--piso2) 25%, transparent 25%, transparent 75%, var(--piso2) 75%); background-size: 32px 32px; background-position: 0 0, 16px 16px; }
   :root { --piso1: #e9e4f5; --piso2: #e1dbef; }
   @media (prefers-color-scheme: dark) { :root { --piso1: #1f2030; --piso2: #23253a; } }
-  .puesto { background: var(--tarjeta); border: 1px solid var(--borde); border-radius: 12px; padding: 10px; cursor: pointer; position: relative; transition: transform .15s; }
-  .puesto:hover { transform: translateY(-2px); }
+  #oSala .puesto { cursor: pointer; }
+  #oSala .puesto:hover .cartelito rect, #oSala .puesto:focus .cartelito rect { stroke-width: 3; }
+  #oSala .puesto:focus { outline: none; }
   .puesto svg { width: 100%; height: auto; display: block; image-rendering: pixelated; }
   .globo { position: relative; background: var(--fondo); border: 1px solid var(--borde); border-radius: 10px; padding: 6px 9px; font-size: 12px; min-height: 34px; margin-bottom: 6px; color: var(--texto); }
   .globo:after { content: ""; position: absolute; left: 34px; bottom: -6px; width: 10px; height: 10px; background: var(--fondo); border-right: 1px solid var(--borde); border-bottom: 1px solid var(--borde); transform: rotate(45deg); }
@@ -71,7 +72,8 @@
   .insignia { position: absolute; top: -8px; right: -8px; background: var(--aviso); color: #fff; border-radius: 99px; min-width: 24px; height: 24px; display: grid; place-items: center; font-size: 12px; font-weight: 700; }
   .trabajando .brazo-i { animation: tecleo .35s infinite; } .trabajando .brazo-d { animation: tecleo .35s infinite .17s; }
   .trabajando .linea { animation: parpadeo 1.2s infinite; } .trabajando .linea:nth-child(2n) { animation-delay: .4s; }
-  .esperando .mano { animation: saludo 1s infinite; transform-origin: 46px 34px; }
+  .esperando .mano { animation: saludo 1s infinite; transform-box: fill-box; transform-origin: 50% 100%; }
+  .brazo-i, .brazo-d { transform-box: fill-box; }
   .descanso .vapor path { animation: vapor 2.4s infinite; } .descanso .vapor path:nth-child(2) { animation-delay: .8s; }
   .descanso .cuerpo { animation: respirar 3s infinite; } .error .alerta { animation: parpadeo .8s infinite; }
   @keyframes tecleo { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
@@ -885,35 +887,131 @@ const ASPECTO = {
 const ICONO_AGENTE = { redactor: "✍️", community: "💬", vendedor: "🤝", atencion: "⭐", emails: "✉️", analista: "📊", investigador: "🔎", trafficker: "📣" };
 const TEXTO_ESTADO = { trabajando: "trabajando", esperando: "esperando tu OK", descanso: "tomando un café", error: "con un problema" };
 
-// Escena pixel art de un puesto: personaje, escritorio, monitor y taza. Las animaciones dependen del estado.
-function escena(a) {
+// Oficina isométrica: una sala con los 8 agentes en sus escritorios. Todo dibujado en SVG (sin imágenes externas).
+const ISO = { s: 34, ox: 400, oy: 150, c: 0.866 };
+const P = (x, y, z = 0) => [ISO.ox + (x - y) * ISO.s * ISO.c, ISO.oy + (x + y) * ISO.s * 0.5 - z * ISO.s];
+const pts = (...ps) => ps.map((p) => p.map((n) => n.toFixed(1)).join(",")).join(" ");
+const poli = (color, ...ps) => `<polygon points="${pts(...ps)}" fill="${color}"/>`;
+// Caja isométrica: tapa, frente (mira a +y) y costado (mira a +x).
+function caja(x, y, z, w, d, h, tapa, frente, costado) {
+  return poli(costado, P(x + w, y, z), P(x + w, y + d, z), P(x + w, y + d, z + h), P(x + w, y, z + h)) +
+    poli(frente, P(x, y + d, z), P(x + w, y + d, z), P(x + w, y + d, z + h), P(x, y + d, z + h)) +
+    poli(tapa, P(x, y, z + h), P(x + w, y, z + h), P(x + w, y + d, z + h), P(x, y + d, z + h));
+}
+// Planta en maceta.
+const planta = (x, y, alto = 1) => caja(x, y, 0, 0.5, 0.5, 0.45, "#b5651d", "#8b4513", "#a0522d") +
+  [[-14, -10], [0, -20], [14, -10], [-7, -26], [8, -27]].map(([dx, dy], k) => {
+    const [px, py] = P(x + 0.25, y + 0.25, 0.45);
+    return `<ellipse cx="${px + dx * alto}" cy="${py + dy * alto}" rx="${9 * alto}" ry="${5 * alto}" fill="${k % 2 ? "#2d6a4f" : "#40916c"}" transform="rotate(${dx * 2} ${px + dx * alto} ${py + dy * alto})"/>`;
+  }).join("");
+
+const PUESTOS = { redactor: [1.6, 2.2], community: [5.4, 2.2], vendedor: [9.2, 2.2], atencion: [13, 2.2],
+  emails: [1.6, 6.4], analista: [5.4, 6.4], investigador: [9.2, 6.4], trafficker: [13, 6.4] };
+
+function puesto(a) {
   const { camisa, pelo, piel } = ASPECTO[a.id];
-  const r = (x, y, w, h, c, extra = "") => `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${c}" ${extra}/>`;
-  const pantalla = a.estado === "trabajando" ? "#1e3a5f" : a.estado === "error" ? "#5f1e1e" : "#20232f";
-  const lineas = a.estado === "trabajando" ? [0, 1, 2, 3].map((i) => r(76, 27 + i * 5, 10 + ((i * 7) % 12), 2, "#7fd1ff", 'class="linea"')).join("") :
-    a.estado === "descanso" ? r(81, 32, 8, 8, "#3a3f55") : "";
-  const brazoD = a.estado === "esperando"
-    ? `<g class="mano">${r(46, 22, 5, 14, camisa)}${r(46, 18, 5, 5, piel)}</g>`
-    : a.estado === "descanso" ? `${r(42, 40, 5, 8, camisa)}${r(38, 40, 6, 5, piel)}${r(36, 34, 7, 7, "#fff")}${r(37, 35, 5, 5, "#8b5a2b")}`
-    : `<g class="brazo-d">${r(42, 46, 6, 10, camisa)}${r(43, 54, 5, 3, piel)}</g>`;
-  return `<svg viewBox="0 0 120 92" shape-rendering="crispEdges" aria-hidden="true">
-    ${r(0, 0, 120, 92, "transparent")}
-    ${r(15, 26, 36, 32, "#555b6e")}${r(17, 28, 32, 28, "#6c7287")}
-    <g class="cuerpo">
-      ${r(20, 34, 26, 22, camisa)}${r(30, 34, 6, 4, piel)}
-      ${r(22, 14, 20, 20, piel)}${r(20, 12, 24, 7, pelo)}${r(20, 14, 4, 10, pelo)}
-      ${r(27, 22, 3, 3, "#222")}${r(35, 22, 3, 3, "#222")}${r(29, 29, 6, 2, a.estado === "error" ? "#7a1f1f" : "#a0522d")}
-      ${a.estado === "error" ? r(42, 18, 2, 4, "#7fd1ff") : ""}
-      <g class="brazo-i">${r(16, 46, 6, 10, camisa)}${r(16, 54, 5, 3, piel)}</g>
-      ${brazoD}
-    </g>
-    ${r(4, 56, 112, 7, "#a47148")}${r(4, 63, 112, 3, "#7f5539")}${r(10, 66, 5, 22, "#7f5539")}${r(105, 66, 5, 22, "#7f5539")}
-    ${r(14, 53, 26, 3, "#d9d9d9")}
-    ${r(70, 22, 36, 26, "#2b2d3a")}${r(72, 24, 32, 22, pantalla)}${lineas}${r(85, 48, 6, 5, "#2b2d3a")}${r(80, 53, 16, 3, "#2b2d3a")}
-    ${a.estado !== "descanso" ? r(56, 48, 7, 8, "#fff") + r(57, 49, 5, 5, "#8b5a2b") : ""}
-    ${a.estado === "descanso" ? `<g class="vapor" fill="none" stroke="#bbb" stroke-width="1.5"><path d="M38 31 q2 -3 0 -6"/><path d="M41 31 q2 -3 0 -6"/></g>` : ""}
-    ${a.estado === "error" ? `<g class="alerta">${r(50, 2, 12, 12, "#d62828")}${r(55, 4, 2, 5, "#fff")}${r(55, 10, 2, 2, "#fff")}</g>` : ""}
-  </svg>`;
+  const [dx, dy] = PUESTOS[a.id];
+  const pantalla = a.estado === "trabajando" ? "#1e6091" : a.estado === "error" ? "#9b2226" : "#1b1e2b";
+  let g = "";
+  // escritorio y monitor (la pantalla mira hacia la persona, en +y)
+  g += caja(dx, dy, 0, 1.9, 1.0, 0.72, "#c8a27a", "#9c6b3f", "#b07d4f");
+  g += caja(dx + 0.55, dy + 0.18, 0.72, 0.8, 0.08, 0.55, "#2b2d3a", "#2b2d3a", "#3a3d4f");
+  g += poli(pantalla, P(dx + 0.6, dy + 0.27, 0.78), P(dx + 1.3, dy + 0.27, 0.78), P(dx + 1.3, dy + 0.27, 1.22), P(dx + 0.6, dy + 0.27, 1.22));
+  if (a.estado === "trabajando") {
+    for (let k = 0; k < 4; k++) {
+      const [x1, y1] = P(dx + 0.66, dy + 0.27, 1.15 - k * 0.09), [x2, y2] = P(dx + 0.66 + 0.25 + ((k * 0.17) % 0.35), dy + 0.27, 1.15 - k * 0.09);
+      g += `<line class="linea" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#90e0ef" stroke-width="2"/>`;
+    }
+  }
+  g += caja(dx + 0.6, dy + 0.55, 0.72, 0.7, 0.25, 0.03, "#e9ecef", "#ced4da", "#dee2e6"); // teclado
+  if (a.estado !== "descanso") g += caja(dx + 1.5, dy + 0.4, 0.72, 0.16, 0.16, 0.18, "#fff", "#e9ecef", "#dee2e6"); // taza en el escritorio
+
+  // persona: sentada (de espaldas, mirando el monitor) o parada al lado con la mano levantada
+  const parado = a.estado === "esperando";
+  const [ax, ay] = parado ? P(dx + 2.35, dy + 0.9, 0) : P(dx + 0.95, dy + 1.55, 0.48);
+  const cuerpo = parado ? ay - 36 : ay - 24;
+  let persona = "";
+  if (parado) {
+    persona += `<rect x="${ax - 7}" y="${ay - 16}" width="6" height="16" fill="#343a40"/><rect x="${ax + 1}" y="${ay - 16}" width="6" height="16" fill="#343a40"/>`;
+  }
+  persona += `<rect x="${ax - 9}" y="${cuerpo}" width="18" height="${parado ? 22 : 24}" rx="5" fill="${camisa}"/>`;
+  persona += `<circle cx="${ax}" cy="${cuerpo - 8}" r="8" fill="${piel}"/><path d="M${ax - 8} ${cuerpo - 8} a8 8 0 0 1 16 0 z" fill="${pelo}"/>`;
+  if (a.estado === "trabajando") {
+    persona += `<rect class="brazo-i" x="${ax - 13}" y="${cuerpo + 3}" width="5" height="13" rx="2" fill="${camisa}"/><rect class="brazo-d" x="${ax + 8}" y="${cuerpo + 3}" width="5" height="13" rx="2" fill="${camisa}"/>`;
+  } else if (parado) {
+    persona += `<g class="mano"><rect x="${ax + 8}" y="${cuerpo - 18}" width="5" height="20" rx="2" fill="${camisa}"/><circle cx="${ax + 10.5}" cy="${cuerpo - 20}" r="3.5" fill="${piel}"/></g>`;
+    persona += `<rect x="${ax - 13}" y="${cuerpo + 3}" width="5" height="15" rx="2" fill="${camisa}"/>`;
+  } else if (a.estado === "descanso") {
+    persona += `<rect x="${ax + 7}" y="${cuerpo - 4}" width="5" height="12" rx="2" fill="${camisa}"/><rect x="${ax + 9}" y="${cuerpo - 12}" width="7" height="8" rx="1" fill="#fff"/>`;
+    persona += `<g class="vapor" fill="none" stroke="#adb5bd" stroke-width="1.5"><path d="M${ax + 11} ${cuerpo - 14} q2 -3 0 -6"/><path d="M${ax + 14} ${cuerpo - 14} q2 -3 0 -6"/></g>`;
+    persona += `<rect x="${ax - 13}" y="${cuerpo + 3}" width="5" height="13" rx="2" fill="${camisa}"/>`;
+  } else {
+    persona += `<rect x="${ax - 13}" y="${cuerpo + 3}" width="5" height="13" rx="2" fill="${camisa}"/><rect x="${ax + 8}" y="${cuerpo + 3}" width="5" height="13" rx="2" fill="${camisa}"/>`;
+  }
+  // silla: si está sentado, el respaldo tapa la parte de abajo de la espalda
+  const silla = (() => {
+    const [sx, sy] = P(dx + 0.95, dy + 1.55, 0);
+    return `<rect x="${sx - 2}" y="${sy - 16}" width="4" height="16" fill="#495057"/><ellipse cx="${sx}" cy="${sy}" rx="12" ry="4" fill="#343a40"/>` +
+      (parado ? `<rect x="${sx - 12}" y="${sy - 34}" width="24" height="20" rx="4" fill="#1d3557"/>` : `<rect x="${sx - 12}" y="${sy - 24}" width="24" height="18" rx="4" fill="#1d3557"/>`);
+  })();
+  g += parado ? silla + persona : persona + silla;
+
+  // cartel arriba: nombre y estado
+  const [bx, by] = P(dx + 0.95, dy + 0.5, 2.6);
+  const colorEstado = { trabajando: "#2a9d8f", esperando: "#e76f51", descanso: "#6c757d", error: "#d62828" }[a.estado];
+  const corto = { trabajando: "trabajando…", esperando: `esperando tu OK${a.pendientes ? " (" + a.pendientes + ")" : ""}`, descanso: "☕ en pausa", error: "⚠️ tuvo un problema" }[a.estado];
+  g += `<g class="cartelito"><rect x="${bx - 62}" y="${by - 30}" width="124" height="34" rx="8" fill="var(--tarjeta)" stroke="${colorEstado}" stroke-width="1.5"/>
+    <path d="M${bx - 5} ${by + 4} l5 7 l5 -7 z" fill="${colorEstado}"/>
+    <text x="${bx}" y="${by - 15}" text-anchor="middle" font-size="11" font-weight="700" fill="var(--texto)">${ICONO_AGENTE[a.id]} ${esc(a.nombre.split(" ")[0])}</text>
+    <text x="${bx}" y="${by - 2}" text-anchor="middle" font-size="10" fill="${colorEstado}">${esc(corto)}</text></g>`;
+  if (a.pendientes) g += `<circle cx="${bx + 60}" cy="${by - 30}" r="10" fill="#e76f51"/><text x="${bx + 60}" y="${by - 26.5}" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">${a.pendientes}</text>`;
+  if (a.estado === "error") g += `<g class="alerta"><circle cx="${bx - 60}" cy="${by - 30}" r="10" fill="#d62828"/><text x="${bx - 60}" y="${by - 26}" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">!</text></g>`;
+  // zona clickeable
+  const [hx, hy] = P(dx + 0.95, dy + 0.9, 0.6);
+  g += `<rect x="${hx - 62}" y="${by - 34}" width="124" height="${hy - by + 60}" fill="transparent"/>`;
+  return `<g class="puesto ${a.estado}" data-agente="${a.id}" role="button" tabindex="0" aria-label="${esc(a.nombre)}: ${esc(TEXTO_ESTADO[a.estado])}. ${esc(a.globo)}"><title>${esc(a.nombre)} — ${esc(a.globo || a.tarea)}</title>${g}</g>`;
+}
+
+function salaOficina(agentes) {
+  const L = 16.5, D = 10, H = 3.4; // largo (x), fondo (y) y alto de la sala
+  let s = "";
+  // paredes del fondo
+  s += poli("#dfe3ea", P(0, 0, 0), P(L, 0, 0), P(L, 0, H), P(0, 0, H));
+  s += poli("#c9ced8", P(0, 0, 0), P(0, D, 0), P(0, D, H), P(0, 0, H));
+  s += caja(-0.25, -0.25, H, L + 0.25, 0.25, 0.12, "#f8f9fa", "#e9ecef", "#dee2e6") + caja(-0.25, 0, H, 0.25, D, 0.12, "#f8f9fa", "#e9ecef", "#dee2e6");
+  // ventanales en la pared del fondo
+  for (let k = 0; k < 5; k++) {
+    const x = 5.6 + k * 2.1;
+    s += poli("#f1f3f5", P(x - 0.08, 0, 0.55), P(x + 1.78, 0, 0.55), P(x + 1.78, 0, 3.05), P(x - 0.08, 0, 3.05));
+    s += poli("#4d7ea8", P(x, 0, 0.62), P(x + 1.7, 0, 0.62), P(x + 1.7, 0, 2.98), P(x, 0, 2.98));
+    s += poli("#7fa7c9", P(x + 0.2, 0, 0.62), P(x + 0.7, 0, 0.62), P(x + 1.3, 0, 2.98), P(x + 0.8, 0, 2.98));
+  }
+  // pizarrón con post-its en la pared izquierda
+  s += poli("#8d6e63", P(0, 1.2, 1.1), P(0, 4.6, 1.1), P(0, 4.6, 2.9), P(0, 1.2, 2.9));
+  s += poli("#fdfdfd", P(0, 1.3, 1.2), P(0, 4.5, 1.2), P(0, 4.5, 2.8), P(0, 1.3, 2.8));
+  [[1.6, 2.5], [2.1, 2.5], [2.6, 2.1], [3.3, 2.5], [3.9, 2.0], [1.7, 1.7], [2.4, 1.5], [4.0, 1.5]].forEach(([y, z], k) =>
+    (s += poli(["#ffd166", "#ef476f", "#06d6a0", "#118ab2"][k % 4], P(0, y, z), P(0, y + 0.3, z), P(0, y + 0.3, z + 0.3), P(0, y, z + 0.3))));
+  { const [tx, ty] = P(0, 3.4, 2.15); s += `<text font-size="14" font-weight="700" fill="#1d3557" text-anchor="middle" transform="translate(${tx} ${ty}) skewY(-30)">ideas</text>`; }
+  // estante con libros y cuadro en la pared del fondo
+  s += caja(1.2, 0, 1.9, 3.2, 0.35, 0.08, "#f8f9fa", "#dee2e6", "#e9ecef");
+  [["#e63946", 0.4], ["#457b9d", 0.7], ["#f4a261", 0.95], ["#2a9d8f", 1.4], ["#8e7dbe", 1.65]].forEach(([c, x]) => (s += caja(1.2 + x, 0.05, 1.98, 0.18, 0.25, 0.42, c, c, c)));
+  s += poli("#264653", P(1.4, 0, 2.6), P(3.9, 0, 2.6), P(3.9, 0, 3.1), P(1.4, 0, 3.1));
+  { const [tx, ty] = P(2.65, 0, 2.77); s += `<text font-size="12" font-weight="800" fill="#ffd166" text-anchor="middle" transform="translate(${tx} ${ty}) skewY(30)">${esc((clientes.find((c) => c.id === ($("#oCliente")?.value))?.nombre || "").toUpperCase())}</text>`; }
+  // piso de madera (con espesor, como una maqueta)
+  s += poli("#6f4a2a", P(0, D, 0), P(L, D, 0), P(L, D, -0.3), P(0, D, -0.3)) + poli("#5c3d22", P(L, 0, 0), P(L, D, 0), P(L, D, -0.3), P(L, 0, -0.3));
+  s += poli("#a47148", P(0, 0, 0), P(L, 0, 0), P(L, D, 0), P(0, D, 0));
+  for (let y = 0.5; y < D; y += 0.5) { const [x1, y1] = P(0, y), [x2, y2] = P(L, y); s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#8b5e34" stroke-width="0.7" opacity=".6"/>`; }
+  for (let x = 2; x < L; x += 2.7) for (let y = 0; y < D; y += 1) { const o = (y % 2) * 1.3; if (x + o >= L) continue; const [x1, y1] = P(x + o, y), [x2, y2] = P(x + o, y + 0.5); s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#8b5e34" stroke-width="0.7" opacity=".5"/>`; }
+  // alfombra, máquina de café y plantas
+  s += poli("#577590", P(4.2, 4.6, 0.01), P(12.4, 4.6, 0.01), P(12.4, 5.6, 0.01), P(4.2, 5.6, 0.01));
+  s += caja(0.1, 7.6, 0, 0.9, 0.9, 1.0, "#6c757d", "#495057", "#5c636a") + caja(0.25, 7.75, 1.0, 0.55, 0.45, 0.5, "#212529", "#343a40", "#2b3035");
+  s += planta(15.6, 0.3, 1.3) + planta(0.3, 0.3, 1.1) + planta(15.6, 9.2, 1.2);
+  // puestos ordenados de atrás hacia adelante
+  const orden = [...agentes].sort((a, b) => PUESTOS[a.id][0] + PUESTOS[a.id][1] - (PUESTOS[b.id][0] + PUESTOS[b.id][1]));
+  s += orden.map(puesto).join("");
+  // marco del dibujo según el tamaño real de la sala (con lugar para los carteles de arriba)
+  const izq = P(0, D)[0] - 20, der = P(L, 0)[0] + 20, arriba = P(0, 0, H)[1] - 40, abajo = P(L, D, -0.3)[1] + 16;
+  return `<svg viewBox="${izq.toFixed(0)} ${arriba.toFixed(0)} ${(der - izq).toFixed(0)} ${(abajo - arriba).toFixed(0)}" role="img" aria-label="Oficina con los agentes de IA" style="width:100%;height:auto;display:block">${s}</svg>`;
 }
 
 async function verOficina() {
@@ -921,25 +1019,25 @@ async function verOficina() {
   v.innerHTML = `<div class="fila" style="margin-bottom:12px">
       <select id="oCliente" style="max-width:260px" ${yo.rol === "agencia" ? "" : "hidden"}>${opcionesClientes(yo.cliente_id || clientes[0]?.id)}</select>
       <span class="meta" id="oTitulo" style="color:var(--suave)"></span></div>
-    <div class="piso" id="oPiso"></div>
-    <p class="meta" style="color:var(--suave);margin-top:10px">Tocá a un agente para ver en qué está, qué hizo y qué tiene para que apruebes. Se actualiza sola.</p>`;
+    <div class="tarjeta" style="padding:8px;overflow:hidden" id="oSala"></div>
+    <div class="tarjeta"><h2>Qué está haciendo cada uno</h2><div id="oLista"></div></div>
+    <p class="meta" style="color:var(--suave)">Tocá a un agente (en la sala o en la lista) para ver en qué está, qué hizo y qué tiene para que apruebes. Se actualiza sola.</p>`;
   $("#oCliente").onchange = () => cargar();
   let ultimo = null;
+  const abrir = (el) => {
+    el.onclick = () => fichaAgente(ultimo, el.dataset.agente);
+    el.onkeydown = (e) => (e.key === "Enter" || e.key === " ") && fichaAgente(ultimo, el.dataset.agente);
+  };
   async function cargar() {
     let o;
     try { o = await api("oficina?cliente=" + encodeURIComponent($("#oCliente").value)); } catch { return; }
     ultimo = o;
     $("#oTitulo").textContent = `Oficina de ${o.cliente.nombre} · ${o.hora} hs · ${o.agentes.filter((a) => a.estado === "trabajando").length} trabajando ahora`;
-    $("#oPiso").innerHTML = o.agentes.map((a) => `<div class="puesto ${a.estado}" data-agente="${a.id}" role="button" tabindex="0" aria-label="${esc(a.nombre)}: ${esc(TEXTO_ESTADO[a.estado])}">
-      ${a.pendientes ? `<span class="insignia">${a.pendientes}</span>` : ""}
-      <div class="globo">${esc(a.globo || a.tarea)}</div>
-      ${escena(a)}
-      <div class="cartel"><b>${ICONO_AGENTE[a.id]} ${esc(a.nombre)}</b><span class="estado ${a.estado}">${esc(TEXTO_ESTADO[a.estado])}</span></div>
-    </div>`).join("");
-    $("#oPiso").querySelectorAll("[data-agente]").forEach((el) => {
-      el.onclick = () => fichaAgente(ultimo, el.dataset.agente);
-      el.onkeydown = (e) => (e.key === "Enter" || e.key === " ") && fichaAgente(ultimo, el.dataset.agente);
-    });
+    $("#oSala").innerHTML = salaOficina(o.agentes);
+    $("#oLista").innerHTML = o.agentes.map((a) => `<div class="fila" data-agente="${a.id}" role="button" tabindex="0" style="cursor:pointer;padding:6px 0;border-bottom:1px solid var(--borde)">
+      <b style="min-width:200px">${ICONO_AGENTE[a.id]} ${esc(a.nombre)}</b><span class="estado ${a.estado}">${esc(TEXTO_ESTADO[a.estado])}</span>
+      <span class="meta" style="color:var(--suave);flex:1">${esc(a.globo || a.tarea)}</span>${a.pendientes ? `<span class="chip pendiente">${a.pendientes} para aprobar</span>` : ""}</div>`).join("");
+    document.querySelectorAll("#oSala [data-agente], #oLista [data-agente]").forEach(abrir);
   }
   await cargar();
   relojOficina = setInterval(cargar, 20000);
