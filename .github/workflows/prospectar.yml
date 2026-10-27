@@ -1,0 +1,47 @@
+name: Prospectar
+
+# Lo dispara el hub: buscar prospectos, escribir propuestas, enviar/leer respuestas (10 y 16 h, días hábiles) o probar la casilla.
+on:
+  workflow_dispatch:
+    inputs:
+      cliente:
+        description: "id del cliente"
+        required: true
+      accion:
+        description: "buscar / escribir / ciclo / probar"
+        required: true
+      prospeccion:
+        description: "id de la campaña (para buscar / escribir)"
+        default: ""
+      cantidad:
+        description: "cuántos prospectos buscar"
+        default: "20"
+
+permissions:
+  contents: read
+
+# un solo ciclo de envíos a la vez por cliente, para no mandar dos veces lo mismo
+concurrency:
+  group: prospectar-${{ inputs.cliente }}-${{ inputs.accion == 'ciclo' && 'ciclo' || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  prospectar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      HUB_URL: ${{ vars.HUB_URL || 'https://kreatit-portero.federosciano.workers.dev' }}
+      CLIENTE: ${{ inputs.cliente }}
+      ACCION: ${{ inputs.accion }}
+      PROSPECCION: ${{ inputs.prospeccion }}
+      CANTIDAD: ${{ inputs.cantidad }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python prospector.py "$CLIENTE" "$ACCION" "$PROSPECCION" "$CANTIDAD"

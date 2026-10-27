@@ -125,6 +125,7 @@
       <button data-vista="resultados">Resultados</button>
       <button data-vista="investigacion">Investigación</button>
       <button data-vista="leads">Leads</button>
+      <button data-vista="prospeccion">Prospección</button>
       <button data-vista="anuncios">Anuncios</button>
       <button data-vista="comentarios">Comentarios</button>
       <button data-vista="resenas">Reseñas</button>
@@ -200,7 +201,7 @@ function ir(vista) {
   if (vida.raf) { cancelAnimationFrame(vida.raf); vida.raf = null; }
   document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("activo", b.dataset.vista === vista));
   try { localStorage.setItem("vista", vista); } catch {}
-  ({ propuestas: () => verPropuestas("pendiente"), historial: () => verPropuestas("todas"), generar: verGenerar, resultados: verResultados, investigacion: verInvestigacion, comentarios: verComentarios, resenas: verResenas, leads: verLeads, anuncios: verAnuncios, ayuda: verAyuda, oficina: verOficina, clientes: verClientes, actividad: verActividad })[vista]();
+  ({ propuestas: () => verPropuestas("pendiente"), historial: () => verPropuestas("todas"), generar: verGenerar, resultados: verResultados, investigacion: verInvestigacion, comentarios: verComentarios, resenas: verResenas, leads: verLeads, prospeccion: verProspeccion, anuncios: verAnuncios, ayuda: verAyuda, oficina: verOficina, clientes: verClientes, actividad: verActividad })[vista]();
 }
 
 async function iniciar() {
@@ -243,6 +244,7 @@ function tarjetaPropuesta(p, recargar) {
   if (p.tipo === "resena") return tarjetaResena(p, recargar);
   if (p.tipo === "email") return tarjetaEmail(p, recargar);
   if (p.tipo === "anuncio") return tarjetaAnuncio(p, recargar);
+  if (p.tipo === "prospecto") return tarjetaProspecto(p, recargar);
   const el = document.createElement("div");
   el.className = "tarjeta prop";
   const editable = p.estado === "pendiente" || p.estado === "error";
@@ -444,6 +446,117 @@ async function verAnuncios() {
     })));
     if ($("#aPubIg")) $("#aPubIg").onclick = () => conBoton($("#aPubIg"), async () => { await api(`audiencias/${cli()}/instagram`, { method: "POST", body: {} }); aviso("Público creado"); cargar(); });
     $("#aPubLeads").onclick = () => conBoton($("#aPubLeads"), async () => { const r = await api(`audiencias/${cli()}/leads`, { method: "POST", body: {} }); aviso(r.nota || "Público actualizado"); cargar(); });
+  }
+  await cargar();
+}
+
+function tarjetaProspecto(p, recargar) {
+  const d = p.datos;
+  const el = document.createElement("div");
+  el.className = "tarjeta prop";
+  const editable = p.estado === "pendiente";
+  el.innerHTML = `
+    <div class="meta"><span class="chip ${esc(p.estado)}">${esc(p.estado)}</span> ${esc(p.cliente_nombre)} · prospección "${esc(d.campana)}"</div>
+    <h2>📨 ${esc(d.nombre || d.email)}</h2>
+    <p class="meta">${esc(d.email)}${d.web ? ` · <a href="${esc(/^https?:/.test(d.web) ? d.web : "http://" + d.web)}" target="_blank" rel="noopener">web</a>` : ""}</p>
+    ${d.resumen ? `<p class="meta">${esc(d.resumen)}</p>` : ""}
+    ${editable ? `<label>Asunto</label><input class="asunto" value="${esc(d.asunto)}"><label>Email</label><textarea class="cuerpo" style="min-height:190px">${esc(d.cuerpo)}</textarea>` :
+      `<p><b>${esc(d.asunto)}</b></p><p style="white-space:pre-wrap">${esc(d.cuerpo)}</p>`}
+    <div class="fila" style="margin-top:12px">${editable ? `<button class="b prim" data-a="aprobar">✅ Aprobar</button><button class="b" data-a="otra">🔄 Otra</button><button class="b peligro" data-a="descartar">Descartar</button>` : ""}</div>
+    <p class="meta" style="color:var(--suave)">Al aprobar entra en la cola: sale en la próxima tanda (10 o 16 h, días hábiles), respetando el tope diario. Lleva firma y link de baja.</p>`;
+  el.querySelectorAll("[data-a]").forEach((b) => (b.onclick = () => conBoton(b, async () => {
+    const r = await api(`propuestas/${p.id}/${b.dataset.a}`, { method: "POST", body: editable ? { asunto: $(".asunto", el).value, cuerpo: $(".cuerpo", el).value } : {} });
+    aviso(r.error || r.nota || "Listo");
+    recargar();
+  })));
+  return el;
+}
+
+// ---------- prospección en frío (B2B)
+const ESTADOS_PROSPECTO = { nuevo: "por escribir", propuesto: "para aprobar", aprobado: "en cola", enviado: "enviado", respondio: "respondió 🎉", terminado: "sin respuesta", baja: "baja", rebote: "rebotó", descartado: "descartado" };
+
+async function verProspeccion() {
+  const v = $("#vista");
+  v.innerHTML = `<div class="fila" style="margin-bottom:12px">
+      <select id="pCliente" style="max-width:260px" ${yo.rol === "agencia" ? "" : "hidden"}>${opcionesClientes(yo.cliente_id || clientes[0]?.id)}</select>
+      <span class="meta" style="color:var(--suave)">Emails de propuesta a negocios (B2B), personalizados y a ritmo humano.</span></div>
+    <div id="pCuerpo"></div>`;
+  const cli = () => $("#pCliente").value;
+  $("#pCliente").onchange = () => cargar();
+  async function cargar() {
+    const { casilla, campanas } = await api("prospeccion?cliente=" + encodeURIComponent(cli()));
+    $("#pCuerpo").innerHTML = `
+      <details class="tarjeta" ${casilla ? "" : "open"}><summary style="cursor:pointer;font-weight:600">${casilla ? "✅" : "⚠️"} Casilla de envío ${casilla ? "configurada" : "— configurala primero"}</summary>
+        <p class="meta" style="color:var(--suave)">Usá un <b>dominio aparte</b> del principal (ej. sumarca-soluciones.com.ar) con una casilla en Google Workspace o Zoho, con SPF, DKIM y DMARC. Así, si algún email termina en spam, no afecta tu dominio principal.
+        En Google Workspace usá una <i>contraseña de aplicación</i>.</p>
+        <div class="fila" style="margin:8px 0"><button class="b" data-preset="google">Usar datos de Google Workspace</button><button class="b" data-preset="zoho">Usar datos de Zoho</button></div>
+        <div class="grilla">
+          <div><label>Email de la casilla</label><input id="cfUsuario" placeholder="hola@sumarca-soluciones.com.ar"></div>
+          <div><label>Contraseña (de aplicación)</label><input id="cfClave" type="password" autocomplete="off" placeholder="${casilla ? "(guardada; escribí otra para cambiarla)" : ""}"></div>
+          <div><label>Servidor de envío (SMTP)</label><input id="cfSmtp"></div><div><label>Puerto SMTP</label><input id="cfPuerto" value="465"></div>
+          <div><label>Servidor de lectura (IMAP)</label><input id="cfImap"></div>
+          <div><label>Nombre del remitente</label><input id="cfRemitente" placeholder="Federico de Kreatit"></div>
+        </div>
+        <label>Firma</label><textarea id="cfFirma" style="min-height:70px" placeholder="Federico Rosciano&#10;Kreatit — desarrollo de software&#10;+54 9 ..."></textarea>
+        <p class="fila"><button class="b prim" id="cfGuardar">Guardar casilla</button><button class="b" id="cfProbar" ${casilla ? "" : "disabled"}>Probar casilla</button></p></details>
+      <div class="tarjeta"><h2>Nueva campaña</h2><div class="grilla">
+        <div><label>Nombre</label><input id="ncNombre" placeholder="Hoteles de Córdoba — demo GestionHotel"></div>
+        <div><label>Rubro a buscar</label><input id="ncRubro" placeholder="hoteles"></div>
+        <div><label>Zona</label><input id="ncZona" placeholder="Córdoba, Córdoba, Argentina"></div>
+        <div><label>Link (demo, landing...)</label><input id="ncLink" placeholder="https://hotel.kreatit.com.ar"></div>
+        <div><label>Emails por día (máx. 40; empezá con 10–15)</label><input id="ncPorDia" type="number" value="15" min="1" max="40"></div></div>
+        <label>Qué ofrecemos y por qué les sirve (la IA usa esto; sé concreto y no exageres)</label>
+        <textarea id="ncOferta" style="min-height:90px" placeholder="GestionHotel: sistema de gestión para hoteles que ... Se puede probar gratis la demo."></textarea>
+        <p><button class="b prim" id="ncCrear">Crear campaña</button></p></div>
+      ${campanas.map((p) => `<div class="tarjeta"><div class="fila" style="justify-content:space-between"><h2>${esc(p.nombre)} ${p.activa ? "" : '<span class="chip">pausada</span>'}</h2>
+          <div class="fila"><button class="b" data-pausa="${esc(p.id)}">${p.activa ? "Pausar" : "Reanudar"}</button><button class="b" data-ver="${esc(p.id)}">Ver prospectos</button></div></div>
+        <p class="meta" style="color:var(--suave)">${esc(p.rubro || "")} · ${esc(p.zona || "")} · ${esc(p.por_dia)}/día · ${p.link ? `<a href="${esc(p.link)}" target="_blank" rel="noopener">${esc(p.link)}</a>` : ""}</p>
+        <p>${Object.entries(p.conteo).map(([e, n]) => `<span class="chip ${e === "respondio" ? "publicada" : ""}">${esc(ESTADOS_PROSPECTO[e] || e)}: ${n}</span>`).join(" ") || '<span class="meta">Todavía sin prospectos.</span>'}</p>
+        <div class="fila"><input type="number" min="5" max="50" value="20" style="width:90px" data-cant="${esc(p.id)}"><button class="b prim" data-buscar="${esc(p.id)}">🔎 Buscar prospectos</button>
+          <label class="b" style="margin:0;cursor:pointer">📄 Subir CSV<input type="file" accept=".csv,text/csv" data-csv="${esc(p.id)}" hidden></label>
+          ${p.conteo.propuesto ? `<button class="b" data-aprobar="${esc(p.id)}">✅ Aprobar las ${p.conteo.propuesto} pendientes</button>` : ""}</div>
+        <p class="meta" style="color:var(--suave)">CSV con columnas: nombre, email, web, telefono, ciudad (la primera fila son los títulos).</p>
+        <div data-lista="${esc(p.id)}"></div></div>`).join("")}`;
+
+    const presets = { google: ["smtp.gmail.com", "465", "imap.gmail.com"], zoho: ["smtp.zoho.com", "465", "imap.zoho.com"] };
+    $("#pCuerpo").querySelectorAll("[data-preset]").forEach((b) => (b.onclick = () => { const [s1, p1, i1] = presets[b.dataset.preset]; $("#cfSmtp").value = s1; $("#cfPuerto").value = p1; $("#cfImap").value = i1; }));
+    $("#cfGuardar").onclick = () => conBoton($("#cfGuardar"), async () => {
+      await api(`clientes/${cli()}/correo-frio`, { method: "POST", body: { usuario: $("#cfUsuario").value, clave: $("#cfClave").value, smtp_host: $("#cfSmtp").value, smtp_puerto: $("#cfPuerto").value, imap_host: $("#cfImap").value, remitente: $("#cfRemitente").value, firma: $("#cfFirma").value } });
+      aviso("Casilla guardada (cifrada)");
+      cargar();
+    });
+    $("#cfProbar").onclick = () => conBoton($("#cfProbar"), async () => { const r = await api(`clientes/${cli()}/correo-frio/probar`, { method: "POST", body: {} }); aviso(r.nota); });
+    $("#ncCrear").onclick = () => conBoton($("#ncCrear"), async () => {
+      await api("prospeccion", { method: "POST", body: { cliente: cli(), nombre: $("#ncNombre").value, rubro: $("#ncRubro").value, zona: $("#ncZona").value, link: $("#ncLink").value, por_dia: $("#ncPorDia").value, oferta: $("#ncOferta").value } });
+      aviso("Campaña creada");
+      cargar();
+    });
+    $("#pCuerpo").querySelectorAll("[data-buscar]").forEach((b) => (b.onclick = () => conBoton(b, async () => {
+      await api(`prospeccion/${b.dataset.buscar}/buscar`, { method: "POST", body: { cantidad: $(`[data-cant="${b.dataset.buscar}"]`).value } });
+      aviso("Buscando y escribiendo propuestas: en unos minutos llegan a 'Para aprobar' y te aviso por Telegram");
+    })));
+    $("#pCuerpo").querySelectorAll("[data-csv]").forEach((inp) => (inp.onchange = () => conBoton(inp.parentElement, async () => {
+      const lineas = (await inp.files[0].text()).split(/\r?\n/).filter((l) => l.trim());
+      const sep = lineas[0].includes(";") ? ";" : ",";
+      const titulos = lineas[0].split(sep).map((t) => t.trim().toLowerCase().replace(/"/g, ""));
+      const filas = lineas.slice(1).map((l) => Object.fromEntries(l.split(sep).map((v, i) => [titulos[i], v.trim().replace(/^"|"$/g, "")])));
+      const r = await api(`prospeccion/${inp.dataset.csv}/csv`, { method: "POST", body: { filas } });
+      aviso(`${r.nuevos} prospectos nuevos: escribiendo las propuestas`);
+      cargar();
+    })));
+    $("#pCuerpo").querySelectorAll("[data-aprobar]").forEach((b) => (b.onclick = () => conBoton(b, async () => {
+      if (!confirm("¿Aprobar toda la tanda sin revisar una por una?")) return;
+      const r = await api(`prospeccion/${b.dataset.aprobar}/aprobar`, { method: "POST", body: {} });
+      aviso(`${r.n} aprobadas: salen respetando el tope diario`);
+      cargar();
+    })));
+    $("#pCuerpo").querySelectorAll("[data-pausa]").forEach((b) => (b.onclick = () => conBoton(b, async () => { await api(`prospeccion/${b.dataset.pausa}/activa`, { method: "POST", body: {} }); cargar(); })));
+    $("#pCuerpo").querySelectorAll("[data-ver]").forEach((b) => (b.onclick = () => conBoton(b, async () => {
+      const lista = await api(`prospeccion/${b.dataset.ver}/prospectos`);
+      $(`[data-lista="${b.dataset.ver}"]`).innerHTML = lista.length ? `<div style="overflow-x:auto"><table><thead><tr><th>Negocio</th><th>Email</th><th>Estado</th><th>Qué es</th><th>Último envío</th></tr></thead><tbody>${
+        lista.map((x) => `<tr><td>${x.web ? `<a href="${esc(/^https?:/.test(x.web) ? x.web : "http://" + x.web)}" target="_blank" rel="noopener">${esc(x.nombre || "-")}</a>` : esc(x.nombre || "-")}</td><td>${esc(x.email)}</td>
+          <td><span class="chip">${esc(ESTADOS_PROSPECTO[x.estado] || x.estado)}${x.paso ? " · seg. " + x.paso : ""}</span></td><td class="meta">${esc(x.resumen || "")}</td><td class="meta">${esc(x.ultimo_envio || "")}</td></tr>`).join("")}</tbody></table></div>` : '<p class="vacio">Sin prospectos todavía.</p>';
+    })));
   }
   await cargar();
 }

@@ -22,6 +22,9 @@ import {
   crearPublicoInstagram, actualizarPublicoLeads,
 } from "./anuncios.js";
 import { estadoOficina } from "./oficina.js";
+import {
+  apiProspector, paginaBajaFrio, aprobarLote, ejecutarProspecto, prospeccionProgramada, apiPanelProspeccion, otraProspecto,
+} from "./prospeccion.js";
 import { guardarInvestigacion, investigacionesSemanales, generarIdea } from "./investigacion.js";
 import {
   sincronizarSiguiente, proponerRespuestas, vistaPreviaRespuesta, ejecutarRespuesta, aprendizajes, informesSemanales, generarInforme,
@@ -56,6 +59,8 @@ async function rutear(req, env, ctx) {
   if (ruta === "/ig/webhook") return webhookInstagram(req, env, ctx);
   const lead = ruta.match(/^\/lead\/([\w-]+)$/);
   if (lead) return leadWeb(req, env, lead[1]);
+  const bajaFrio = ruta.match(/^\/baja-frio\/([\w.-]+)$/);
+  if (bajaFrio) return paginaBajaFrio(env, bajaFrio[1]);
   const baja = ruta.match(/^\/baja\/([\w.-]+)$/);
   if (baja) return paginaBaja(req, env, baja[1]);
 
@@ -113,6 +118,13 @@ async function webhookTelegram(req, env, ctx) {
   if (u.callback_query) {
     const cb = u.callback_query;
     const [accion, id, extra] = cb.data.split(":");
+    if (accion === "lote") {
+      const pr = await env.DB.prepare("SELECT cliente_id FROM prospecciones WHERE id = ?").bind(id).first();
+      const ok = pr && puede(yo, pr.cliente_id);
+      await tg(env, "answerCallbackQuery", { callback_query_id: cb.id, text: ok ? "✅ Tanda aprobada: sale respetando el tope diario" : "No tenés acceso" });
+      if (ok) ctx.waitUntil(aprobarLote(env, id));
+      return new Response("ok");
+    }
     if (accion === "idea") {
       const inf = await env.DB.prepare("SELECT cliente_id FROM informes WHERE id = ?").bind(id).first();
       const ok = inf && puede(yo, inf.cliente_id);
@@ -187,7 +199,7 @@ async function comandoTelegram(env, yo, chat, texto, mensaje) {
   if (!p || !puede(yo, p.cliente_id)) return responder(env, chat, "No hay posts pendientes. Mandá /nuevo para generar uno.");
   if (p.estado !== "pendiente") return responder(env, chat, "Ese post ya no está pendiente (" + p.estado + ").");
   const datos = JSON.parse(p.datos);
-  if (p.tipo === "email") {
+  if (p.tipo === "email" || p.tipo === "prospecto") {
     datos.cuerpo = texto;
   } else if (p.tipo === "respuesta" || p.tipo === "mensaje" || p.tipo === "resena") {
     datos.respuesta = p.tipo === "resena" ? texto.slice(0, 350) : texto;
@@ -209,6 +221,18 @@ async function enviarVistaPrevia(env, id) {
   if (p.tipo === "resena") return vistaPreviaResena(env, id);
   if (p.tipo === "email") return vistaPreviaEmail(env, id);
   if (p.tipo === "anuncio") return vistaPreviaAnuncio(env, id);
+  if (p.tipo === "prospecto") {
+    const d = JSON.parse(p.datos);
+    const botones = { inline_keyboard: [[{ text: "✅ Aprobar", callback_data: "ok:" + id }, { text: "🔄 Otra", callback_data: "otra:" + id }, { text: "❌ Descartar", callback_data: "no:" + id }]] };
+    for (const chat of await destinatarios(env, p.cliente_id, true)) {
+      const m = await tg(env, "sendMessage", { chat_id: chat, text: `📨 ${p.cliente_nombre}: propuesta a ${d.nombre || ""} <${d.email}>
+Asunto: ${d.asunto}
+
+${d.cuerpo}`.slice(0, 4096), reply_markup: botones });
+      if (m?.result?.message_id) await env.DB.prepare("INSERT OR REPLACE INTO mensajes_tg (chat_id, message_id, propuesta_id) VALUES (?, ?, ?)").bind(chat, m.result.message_id, id).run();
+    }
+    return;
+  }
   const datos = JSON.parse(p.datos);
   const botones = { inline_keyboard: [[
     { text: "✅ Publicar", callback_data: "ok:" + id },
@@ -256,11 +280,16 @@ async function accionPropuesta(env, id, accion, cambios = null, chat = null) {
     if (p.tipo === "respuesta") await env.DB.prepare("UPDATE comentarios SET estado = 'ignorado' WHERE id = ?").bind(datos.comentario_id).run();
     if (p.tipo === "resena") await env.DB.prepare("UPDATE resenas SET estado = 'ignorado' WHERE id = ?").bind(datos.resena_id).run();
     if (p.tipo === "email") await saltearEmail(env, datos);
+    if (p.tipo === "prospecto") await env.DB.prepare("UPDATE prospectos SET estado = 'descartado' WHERE id = ?").bind(datos.prospecto_id).run();
     return { ok: true };
   }
   if (accion === "otra") {
     if (p.estado === "pendiente") {
       await env.DB.prepare("UPDATE propuestas SET estado = 'descartada', actualizado = datetime('now') WHERE id = ?").bind(id).run();
+    }
+    if (p.tipo === "prospecto") {
+      await otraProspecto(env, datos, chat);
+      return { ok: true, nota: "En 1 o 2 minutos llega otra versión" };
     }
     if (p.tipo === "anuncio") {
       if (chat) await responder(env, chat, "🔄 Armando otra propuesta de campaña...");
@@ -301,7 +330,7 @@ async function accionPropuesta(env, id, accion, cambios = null, chat = null) {
 // Ejecuta una propuesta aprobada según su tipo.
 function ejecutar(env, id) {
   return env.DB.prepare("SELECT tipo FROM propuestas WHERE id = ?").bind(id).first()
-    .then((p) => ({ respuesta: ejecutarRespuesta, mensaje: ejecutarMensaje, resena: ejecutarResena, email: ejecutarEmail, anuncio: ejecutarAnuncio }[p?.tipo] || publicar)(env, id));
+    .then((p) => ({ respuesta: ejecutarRespuesta, mensaje: ejecutarMensaje, resena: ejecutarResena, email: ejecutarEmail, anuncio: ejecutarAnuncio, prospecto: ejecutarProspecto }[p?.tipo] || publicar)(env, id));
 }
 
 // Publica una propuesta aprobada. Si Instagram todavía está procesando la imagen, queda "aprobada"
@@ -401,6 +430,8 @@ async function apiAgente(req, env, ctx, ruta, url) {
     }
     return Response.json({ ok: true, id });
   }
+
+  if (ruta.startsWith("prospeccion/")) return apiProspector(req, env, ruta.slice("prospeccion/".length), url);
 
   if (ruta === "investigacion" && req.method === "GET") {
     const c = await env.DB.prepare("SELECT id, nombre, marca, investigacion FROM clientes WHERE id = ?").bind(url.searchParams.get("cliente")).first();
@@ -772,6 +803,9 @@ async function apiPanel(req, env, ctx, yo, ruta, url) {
     return Response.json(results);
   }
 
+  const prospeccion = await apiPanelProspeccion(req, env, yo, puede, ruta, url);
+  if (prospeccion) return prospeccion;
+
   if (ruta === "eventos") {
     const { results } = await env.DB.prepare("SELECT * FROM eventos WHERE ? OR cliente_id = ? ORDER BY id DESC LIMIT 100")
       .bind(agencia ? 1 : 0, yo.cliente_id).all();
@@ -939,6 +973,7 @@ async function tareasProgramadas(env) {
   await proponerResenas(env);
   await nutricionPendiente(env);
   await sincronizarAdsSiguiente(env);
+  await prospeccionProgramada(env);
   await informesSemanales(env);
   await investigacionesSemanales(env);
 
