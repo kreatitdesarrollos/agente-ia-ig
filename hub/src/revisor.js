@@ -61,8 +61,7 @@ No marques cuestiones de estilo ni gustos personales: si el texto es correcto, "
 
   if (datos.auto_pendiente) { // modo automático: sale solo si el revisor lo aprueba
     if (revision.ok) {
-      await env.DB.prepare("UPDATE propuestas SET estado = 'aprobada', actualizado = datetime('now') WHERE id = ?").bind(p.id).run();
-      await acciones.ejecutar(env, p.id);
+      await acciones.aprobar(env, p.id); // pasa por la cola del Publicador como cualquier aprobación
     } else {
       await registrar(env, p.cliente_id, "revisor", `frenó la publicación automática: ${revision.problemas.join(" / ")}`);
       await acciones.enviarVistaPrevia(env, p.id);

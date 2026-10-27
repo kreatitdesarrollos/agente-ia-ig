@@ -23,6 +23,7 @@ import {
 } from "./anuncios.js";
 import { estadoOficina } from "./oficina.js";
 import { revisarPendientes, usarCorreccion } from "./revisor.js";
+import { turnoDePublicacion, publicarProgramadas, publicarEnFacebook } from "./publicador.js";
 import { armarResumen, resumenesDiarios } from "./gerente.js";
 import { contarIntento, chequearSitios, chequeosInternos, chequeoDiario, apiSeguridadAgente, apiPanelSeguridad } from "./seguridad.js";
 import {
@@ -33,8 +34,10 @@ import {
   sincronizarSiguiente, proponerRespuestas, vistaPreviaRespuesta, ejecutarRespuesta, aprendizajes, informesSemanales, generarInforme,
 } from "./instagram.js";
 import {
-  webhookInstagram, leadWeb, proponerPendientesMensajes, vistaPreviaMensaje, ejecutarMensaje, enviarMensajeIG,
+  webhookMeta, leadWeb, rutaChat, proponerPendientesMensajes, vistaPreviaMensaje, ejecutarMensaje, enviarPorCanal,
 } from "./mensajes.js";
+import { guardarAgenda, probarAgenda } from "./agenda.js";
+import { crearCobro, avisoMercadoPago, recordarCobros, guardarMercadoPago } from "./cobros.js";
 
 const IG_PERMISOS = "instagram_business_basic,instagram_business_content_publish,instagram_business_manage_comments," +
   "instagram_business_manage_insights,instagram_business_manage_messages";
@@ -74,7 +77,11 @@ async function rutear(req, env, ctx) {
   const ruta = url.pathname;
 
   if (ruta === "/telegram" && req.method === "POST") return webhookTelegram(req, env, ctx);
-  if (ruta === "/ig/webhook") return webhookInstagram(req, env, ctx);
+  if (ruta === "/ig/webhook" || ruta === "/meta/webhook") return webhookMeta(req, env, ctx);
+  const chatRuta = ruta.match(/^\/chat\/([\w-]+)(?:\.js|\/(enviar|mensajes))$/);
+  if (chatRuta) return rutaChat(req, env, ctx, chatRuta[1], chatRuta[2] || "js", url);
+  const mp = ruta.match(/^\/mp\/([\w-]+)$/);
+  if (mp && req.method === "POST") return avisoMercadoPago(req, env, mp[1]);
   const lead = ruta.match(/^\/lead\/([\w-]+)$/);
   if (lead) return leadWeb(req, env, lead[1]);
   const bajaFrio = ruta.match(/^\/baja-frio\/([\w.-]+)$/);
@@ -88,6 +95,17 @@ async function rutear(req, env, ctx) {
     const datos = await env.ARCHIVOS.get("img:" + img[1], "arrayBuffer");
     if (!datos) return new Response("no", { status: 404 });
     return new Response(datos, { headers: { "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=86400" } });
+  }
+
+  const vid = ruta.match(/^\/vid\/([\w-]+)\.mp4$/);
+  if (vid) {
+    const datos = await env.ARCHIVOS.get("vid:" + vid[1], "arrayBuffer");
+    if (!datos) return new Response("no", { status: 404 });
+    const total = datos.byteLength, rango = (req.headers.get("Range") || "").match(/bytes=(\d*)-(\d*)/);
+    const base = { "Content-Type": "video/mp4", "Accept-Ranges": "bytes", "Cache-Control": "public, max-age=86400" };
+    if (!rango) return new Response(datos, { headers: { ...base, "Content-Length": String(total) } });
+    const ini = rango[1] ? Number(rango[1]) : Math.max(0, total - Number(rango[2])), fin = rango[1] && rango[2] ? Math.min(Number(rango[2]), total - 1) : total - 1;
+    return new Response(datos.slice(ini, fin + 1), { status: 206, headers: { ...base, "Content-Range": `bytes ${ini}-${fin}/${total}`, "Content-Length": String(fin - ini + 1) } });
   }
 
   if (ruta === "/" || ruta === "/panel") {
@@ -307,9 +325,10 @@ async function accionPropuesta(env, id, accion, cambios = null, chat = null) {
   }
 
   if (accion === "aprobar") {
-    await env.DB.prepare("UPDATE propuestas SET estado = 'aprobada', actualizado = datetime('now') WHERE id = ?").bind(id).run();
     await registrar(env, p.cliente_id, "aprobada", p.titulo);
-    return ejecutar(env, id);
+    const r = await aprobarSegunTipo(env, id);
+    if (r.nota && chat) await responder(env, chat, r.nota);
+    return r;
   }
   if (accion === "descartar") {
     await env.DB.prepare("UPDATE propuestas SET estado = 'descartada', actualizado = datetime('now') WHERE id = ?").bind(id).run();
@@ -363,6 +382,22 @@ async function accionPropuesta(env, id, accion, cambios = null, chat = null) {
   return { error: "acción desconocida" };
 }
 
+// Los posts y videos pasan por la cola del Publicador (nunca varios juntos); lo demás sale en el momento.
+async function aprobarSegunTipo(env, id) {
+  const p = await env.DB.prepare("SELECT * FROM propuestas WHERE id = ?").bind(id).first();
+  if (["post", "video"].includes(p.tipo)) {
+    const c = await env.DB.prepare("SELECT * FROM clientes WHERE id = ?").bind(p.cliente_id).first();
+    const turno = await turnoDePublicacion(env, c);
+    if (turno.programada) {
+      await env.DB.prepare("UPDATE propuestas SET estado = 'programada', programada = ?, actualizado = datetime('now') WHERE id = ?").bind(turno.programada, id).run();
+      await registrar(env, c.id, "programada", `${p.titulo} → ${turno.local}`);
+      return { ok: true, nota: `🗓️ "${p.titulo}" quedó programado para ${turno.local}, para no publicar varios juntos (Instagram les da menos alcance).` };
+    }
+  }
+  await env.DB.prepare("UPDATE propuestas SET estado = 'aprobada', actualizado = datetime('now') WHERE id = ?").bind(id).run();
+  return ejecutar(env, id);
+}
+
 // Ejecuta una propuesta aprobada según su tipo.
 function ejecutar(env, id) {
   return env.DB.prepare("SELECT tipo FROM propuestas WHERE id = ?").bind(id).first()
@@ -384,9 +419,12 @@ async function publicar(env, id) {
   try {
     if (!c.ig_user_id || !c.ig_token) throw new Error("el cliente no tiene Instagram conectado (Clientes → Conectar Instagram)");
     const token = await descifrar(env, c.ig_token);
+    const esVideo = p.tipo === "video";
+    const archivo = esVideo ? `${env.URL_PUBLICA}/vid/${id}.mp4` : `${env.URL_PUBLICA}/img/${id}.jpg`;
     if (!resultado.contenedor) {
       const r = await igPost(`${IG_API}/${c.ig_user_id}/media`, {
-        image_url: `${env.URL_PUBLICA}/img/${id}.jpg`, caption: textoFinal(datos).slice(0, 2200), access_token: token,
+        ...(esVideo ? { media_type: "REELS", video_url: archivo, share_to_feed: "true", ...(datos.portada_ms ? { thumb_offset: String(datos.portada_ms) } : {}) } : { image_url: archivo }),
+        caption: textoFinal(datos).slice(0, 2200), access_token: token,
       });
       resultado.contenedor = r.id;
       await guardarResultado(env, id, resultado);
@@ -406,6 +444,7 @@ async function publicar(env, id) {
     const link = await igGet(`${IG_API}/${pub.id}`, { fields: "permalink", access_token: token });
     resultado.media_id = pub.id;
     resultado.enlace = link.permalink || "";
+    resultado.facebook = await publicarEnFacebook(env, c, textoFinal(datos), archivo, esVideo);
     await env.DB.prepare("UPDATE propuestas SET estado = 'publicada', resultado = ?, actualizado = datetime('now') WHERE id = ?")
       .bind(JSON.stringify(resultado), id).run();
     await registrar(env, c.id, "publicada", p.titulo + " " + resultado.enlace);
@@ -524,6 +563,18 @@ async function apiPanel(req, env, ctx, yo, ruta, url) {
     return Response.json(results.map((p) => ({ ...p, datos: JSON.parse(p.datos), resultado: JSON.parse(p.resultado || "{}") })));
   }
 
+  const cola = ruta.match(/^propuestas\/([\w-]+)\/(ya|desprogramar)$/);
+  if (cola && metodo === "POST") {
+    const p = await env.DB.prepare("SELECT cliente_id, estado FROM propuestas WHERE id = ?").bind(cola[1]).first();
+    if (!p || !puede(yo, p.cliente_id)) return SIN_PERMISO();
+    if (p.estado !== "programada") return Response.json({ error: "no está programada" }, { status: 400 });
+    if (cola[2] === "desprogramar") {
+      await env.DB.prepare("UPDATE propuestas SET estado = 'pendiente', programada = NULL WHERE id = ?").bind(cola[1]).run();
+      return Response.json({ ok: true });
+    }
+    await env.DB.prepare("UPDATE propuestas SET estado = 'aprobada' WHERE id = ?").bind(cola[1]).run();
+    return Response.json(await ejecutar(env, cola[1]));
+  }
   const corr = ruta.match(/^propuestas\/([\w-]+)\/corregir$/);
   if (corr && metodo === "POST") {
     const p = await env.DB.prepare("SELECT cliente_id FROM propuestas WHERE id = ?").bind(corr[1]).first();
@@ -575,6 +626,7 @@ async function apiPanel(req, env, ctx, yo, ruta, url) {
       c.ig_token = c.ig_token ? "(guardado)" : "";
       c.play_cuenta = c.play_cuenta ? "(guardada)" : "";
       c.ads_token = c.ads_token ? "(guardado)" : "";
+      for (const k of ["fb_token", "wa_token", "agenda_cuenta", "mp_token", "wp_config"]) c[k] = c[k] ? "(guardado)" : "";
       return Response.json(c);
     }
     if (metodo === "PUT") {
@@ -675,6 +727,64 @@ async function apiPanel(req, env, ctx, yo, ruta, url) {
     ).bind(cliente, cliente).all();
     return Response.json(results);
   }
+  const cobrar = ruta.match(/^leads\/([\w-]+)\/cobrar$/);
+  if (cobrar && metodo === "POST") {
+    const ct = await env.DB.prepare("SELECT * FROM contactos WHERE id = ?").bind(cobrar[1]).first();
+    if (!ct || !puede(yo, ct.cliente_id)) return SIN_PERMISO();
+    const b = await cuerpo();
+    const c = await env.DB.prepare("SELECT * FROM clientes WHERE id = ?").bind(ct.cliente_id).first();
+    try {
+      const r = await crearCobro(env, c, ct.id, b.concepto, b.monto);
+      let enviado = false;
+      if (b.enviar) {
+        try {
+          const texto = `Te paso el link para pagar ${b.concepto} ($${b.monto}): ${r.link}`;
+          const mid = await enviarPorCanal(env, c, ct, texto);
+          await env.DB.prepare("INSERT OR IGNORE INTO mensajes (id, cliente_id, contacto_id, direccion, texto) VALUES (?, ?, ?, 'saliente', ?)").bind(mid || "cobro-" + r.id, c.id, ct.id, texto).run();
+          enviado = true;
+        } catch (e) {
+          return Response.json({ ok: true, link: r.link, aviso: "Link creado, pero no se pudo enviar por el chat: " + e.message });
+        }
+      }
+      return Response.json({ ok: true, link: r.link, enviado });
+    } catch (e) {
+      return Response.json({ error: e.message }, { status: 400 });
+    }
+  }
+  if (ruta === "cobros" && metodo === "GET") {
+    const cliente = url.searchParams.get("cliente");
+    if (!puede(yo, cliente)) return SIN_PERMISO();
+    const { results } = await env.DB.prepare(
+      "SELECT cb.*, ct.nombre, ct.usuario, ct.telefono FROM cobros cb LEFT JOIN contactos ct ON ct.id = cb.contacto_id WHERE cb.cliente_id = ? ORDER BY cb.creado DESC LIMIT 100"
+    ).bind(cliente).all();
+    return Response.json(results);
+  }
+  const conex = ruta.match(/^clientes\/([\w-]+)\/(canales|agenda|agenda-probar|mercadopago)$/);
+  if (conex && metodo === "POST") {
+    if (!puede(yo, conex[1])) return SIN_PERMISO();
+    const b = await cuerpo();
+    try {
+      if (conex[2] === "agenda") return Response.json(await guardarAgenda(env, conex[1], b));
+      if (conex[2] === "agenda-probar") return Response.json(await probarAgenda(env, conex[1]));
+      if (conex[2] === "mercadopago") return Response.json(await guardarMercadoPago(env, conex[1], b.token));
+      // canales: Messenger / WhatsApp / chat web / publicación
+      const set = async (col, val) => env.DB.prepare(`UPDATE clientes SET ${col} = ? WHERE id = ?`).bind(val, conex[1]).run();
+      if (b.fb_pagina_id !== undefined) await set("fb_pagina_id", String(b.fb_pagina_id).trim() || null);
+      if (b.fb_token) await set("fb_token", await cifrar(env, b.fb_token.trim()));
+      if (b.wa_phone_id !== undefined) await set("wa_phone_id", String(b.wa_phone_id).trim() || null);
+      if (b.wa_numero !== undefined) await set("wa_numero", String(b.wa_numero).trim() || null);
+      if (b.wa_token) await set("wa_token", await cifrar(env, b.wa_token.trim()));
+      if (b.chat_config) await set("chat_config", JSON.stringify({ activo: !!b.chat_config.activo, saludo: String(b.chat_config.saludo || "").slice(0, 200), color: b.chat_config.color || "#4b3fb0" }));
+      if (b.publicacion_config) await set("publicacion_config", JSON.stringify({ por_dia: Math.min(6, Math.max(1, Number(b.publicacion_config.por_dia) || 2)),
+        horarios: (b.publicacion_config.horarios || ["12:00", "19:00"]).filter((h) => /^\d\d:\d\d$/.test(h)).slice(0, 6), facebook: !!b.publicacion_config.facebook }));
+      if (b.fb_token && b.fb_pagina_id) { // que Facebook avise al hub de los mensajes de Messenger
+        await fetch(`https://graph.facebook.com/v23.0/${b.fb_pagina_id}/subscribed_apps?subscribed_fields=messages,message_echoes&access_token=${encodeURIComponent(b.fb_token.trim())}`, { method: "POST" });
+      }
+      return Response.json({ ok: true });
+    } catch (e) {
+      return Response.json({ error: e.message }, { status: 400 });
+    }
+  }
   const ld = ruta.match(/^leads\/([\w-]+)(\/mensaje)?$/);
   if (ld) {
     const ct = await env.DB.prepare("SELECT * FROM contactos WHERE id = ?").bind(ld[1]).first();
@@ -692,10 +802,14 @@ async function apiPanel(req, env, ctx, yo, ruta, url) {
       return Response.json({ ok: true });
     }
     if (ld[2] && metodo === "POST") { // mensaje escrito a mano desde el panel
-      if (ct.canal !== "instagram") return Response.json({ error: "este contacto no vino por Instagram: escribile por su email o teléfono" }, { status: 400 });
       const b = await cuerpo();
       const c = await env.DB.prepare("SELECT * FROM clientes WHERE id = ?").bind(ct.cliente_id).first();
-      const mid = await enviarMensajeIG(env, c, ct.externo_id, String(b.texto || "").trim());
+      let mid;
+      try {
+        mid = await enviarPorCanal(env, c, ct, String(b.texto || "").trim());
+      } catch (e) {
+        return Response.json({ error: e.message }, { status: 400 });
+      }
       await env.DB.prepare("INSERT OR IGNORE INTO mensajes (id, cliente_id, contacto_id, direccion, texto) VALUES (?, ?, ?, 'saliente', ?)")
         .bind(mid || "panel-" + Date.now(), c.id, ct.id, b.texto).run();
       await env.DB.prepare("UPDATE contactos SET por_responder = 0, ultimo_mensaje = datetime('now') WHERE id = ?").bind(ct.id).run();
@@ -1026,11 +1140,13 @@ async function tareasProgramadas(env) {
   await sincronizarPlaySiguiente(env);
   await proponerResenas(env);
   await nutricionPendiente(env);
+  await recordarCobros(env);
   await sincronizarAdsSiguiente(env);
   await prospeccionProgramada(env);
 
   // 5. revisor de calidad (antes de que apruebes, o antes de que salga solo) y resumen diario del gerente
-  await revisarPendientes(env, { ejecutar, enviarVistaPrevia });
+  await revisarPendientes(env, { aprobar: aprobarSegunTipo, enviarVistaPrevia });
+  await publicarProgramadas(env, ejecutar);
   await resumenesDiarios(env);
 
   // 6. seguridad: sitios cada 15 min, el hub por dentro cada hora y el chequeo profundo una vez por día

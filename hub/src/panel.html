@@ -233,6 +233,20 @@ async function verPropuestas(estado) {
   $("#filtroCliente").onchange = () => cargar();
   async function cargar() {
     const lista = await api(`propuestas?estado=${estado}&cliente=${$("#filtroCliente").value}`);
+    if (estado === "pendiente") {
+      const cola = await api(`propuestas?estado=programada&cliente=${$("#filtroCliente").value}`);
+      $("#cola")?.remove();
+      if (cola.length) {
+        const div = document.createElement("div");
+        div.id = "cola"; div.className = "tarjeta";
+        div.innerHTML = `<h2>🗓️ En cola para publicar</h2><p class="meta" style="color:var(--suave)">El Publicador los escalona para no publicar varios juntos.</p>` +
+          cola.map((p) => `<div class="fila" style="padding:6px 0;border-bottom:1px solid var(--borde)"><b style="flex:1">${esc(p.titulo)}</b><span class="meta">${esc(p.cliente_nombre)} · ${esc(p.programada)} UTC</span>
+            <button class="b" data-ya="${esc(p.id)}">Publicar ya</button><button class="b" data-sacar="${esc(p.id)}">Sacar de la cola</button></div>`).join("");
+        $("#lista").before(div);
+        div.querySelectorAll("[data-ya]").forEach((b) => (b.onclick = () => conBoton(b, async () => { const r = await api(`propuestas/${b.dataset.ya}/ya`, { method: "POST", body: {} }); aviso(r.error || "Publicando"); cargar(); })));
+        div.querySelectorAll("[data-sacar]").forEach((b) => (b.onclick = () => conBoton(b, async () => { await api(`propuestas/${b.dataset.sacar}/desprogramar`, { method: "POST", body: {} }); aviso("Volvió a 'Para aprobar'"); cargar(); })));
+      }
+    }
     $("#lista").innerHTML = lista.length ? "" : `<div class="vacio">${estado === "pendiente" ? "No hay nada para aprobar 🎉" : "Todavía no hay historial"}</div>`;
     for (const p of lista) $("#lista").append(tarjetaPropuesta(p, cargar));
   }
@@ -605,19 +619,24 @@ async function verLeads() {
   v.innerHTML = `<div class="fila" style="margin-bottom:16px">
       <select id="lCliente" style="max-width:260px" ${yo.rol === "agencia" ? "" : "hidden"}><option value="">Todos los clientes</option>${opcionesClientes()}</select>
       <select id="lEtapa" style="max-width:200px"><option value="">Todas las etapas</option>${ETAPAS.map((e) => `<option>${e}</option>`).join("")}</select></div>
-    <div class="tarjeta" id="lLista"></div>`;
+    <div class="tarjeta" id="lLista"></div><div class="tarjeta" id="lCobros"></div>`;
   $("#lCliente").onchange = $("#lEtapa").onchange = () => cargar();
   async function cargar() {
     let lista = await api("leads?cliente=" + encodeURIComponent(yo.rol === "agencia" ? $("#lCliente").value : yo.cliente_id));
     if ($("#lEtapa").value) lista = lista.filter((l) => l.etapa === $("#lEtapa").value);
     $("#lLista").innerHTML = lista.length ? `<div style="overflow-x:auto"><table><thead><tr><th>Contacto</th><th>Cliente</th><th>Etapa</th><th>Interés</th><th>Qué busca</th><th>Último mensaje</th><th></th></tr></thead><tbody>${
-      lista.map((l) => `<tr><td><b>${esc(l.nombre || (l.usuario ? "@" + l.usuario : "") || l.email || l.telefono || "?")}</b><br><span class="chip">${esc(l.canal)}</span>
+      lista.map((l) => `<tr><td><b>${esc(l.nombre || (l.usuario ? "@" + l.usuario : "") || l.email || l.telefono || "?")}</b><br><span class="chip">${{ instagram: "📸", messenger: "💬", whatsapp: "🟢", chat: "🌐", web: "📝", email: "✉️" }[l.canal] || ""} ${esc(l.canal)}</span>
           ${l.usuario && l.nombre ? `<span class="meta">@${esc(l.usuario)}</span>` : ""}</td>
         <td>${esc(l.cliente_nombre)}</td><td><span class="chip">${esc(l.etapa)}</span></td><td>${INTERES[l.interes] || ""} ${esc(l.interes || "")}</td>
         <td>${esc(l.resumen || "")}</td><td>${esc((l.ultimo_texto || "").slice(0, 80))}<br><span class="meta">${esc(l.ultimo_mensaje || "")} UTC</span></td>
         <td><button class="b" data-l="${esc(l.id)}">Abrir</button></td></tr>`).join("")
     }</tbody></table></div>` : '<p class="vacio">Todavía no hay leads. Llegan solos cuando alguien escribe por Instagram o completa el formulario web.</p>';
     $("#lLista").querySelectorAll("[data-l]").forEach((b) => (b.onclick = () => verLead(b.dataset.l)));
+    const cli = yo.rol === "agencia" ? $("#lCliente").value : yo.cliente_id;
+    if (cli) {
+      const cobros = await api("cobros?cliente=" + encodeURIComponent(cli));
+      $("#lCobros").innerHTML = `<h2>💳 Cobros</h2>` + (cobros.length ? `<table><tbody>${cobros.map((x) => `<tr><td>${esc(x.creado.slice(0, 10))}</td><td>${esc(x.nombre || x.usuario || x.telefono || "")}</td><td>${esc(x.concepto)}</td><td><b>$${esc(x.monto)}</b></td><td>${x.estado === "pagado" ? "✅ pagado" : "⏳ pendiente"}</td><td><a href="${esc(x.link)}" target="_blank" rel="noopener">link</a></td></tr>`).join("")}</tbody></table>` : '<p class="vacio">Todavía no hay cobros.</p>');
+    } else $("#lCobros").innerHTML = '<p class="meta">Elegí un cliente para ver sus cobros.</p>';
   }
   await cargar();
 }
@@ -645,13 +664,19 @@ async function verLead(id) {
       ${l.baja ? '<p class="meta">🚫 Dado de baja: no recibe emails.</p>' : l.email ? `<p class="meta">Paso ${l.nutricion_paso} de la secuencia${l.nutricion_proximo && !l.nutricion_proximo.startsWith("9999") ? " · próximo: " + esc(l.nutricion_proximo) + " UTC" : ""}</p>` : '<p class="meta">Sin email: no entra en la secuencia.</p>'}
       ${l.emails.map((e) => `<p class="meta">${esc(e.fecha)} · ${e.estado === "enviado" ? "✅" : "⚠️"} ${esc(e.asunto)}${e.estado !== "enviado" ? " — " + esc(e.detalle) : ""}</p>`).join("")}
       ${l.email && !l.baja ? '<p><button class="b peligro" id="ldBaja">Dejar de enviarle emails</button></p>' : ""}
-      ${l.canal === "instagram" ? `<label>Escribirle (Instagram deja hasta 24 h después de su último mensaje)</label><textarea id="ldMsg" style="min-height:70px"></textarea>
-        <p><button class="b prim" id="ldEnviar">Enviar</button></p>` : `<p class="meta">Vino por la web: escribile por email o teléfono.</p>`}
+      ${["instagram", "messenger", "whatsapp", "chat"].includes(l.canal) ? `<label>Escribirle (en Instagram, Messenger y WhatsApp: hasta 24 h después de su último mensaje)</label><textarea id="ldMsg" style="min-height:70px"></textarea>
+        <p><button class="b prim" id="ldEnviar">Enviar</button></p>` : `<p class="meta">Vino por ${esc(l.canal)}: escribile por email o teléfono.</p>`}
+      <h3>💳 Cobrar</h3><div class="fila"><input id="cbConcepto" placeholder="Concepto (ej. Plan mensual)" style="flex:1"><input id="cbMonto" type="number" placeholder="Monto $" style="width:120px">
+        <button class="b" id="cbCrear">Crear link${["instagram", "messenger", "whatsapp", "chat"].includes(l.canal) ? " y enviarlo" : ""}</button></div><p class="meta" id="cbEstado"></p>
     </div></div>`;
   $("#lVolver").onclick = () => ir("leads");
   $("#ldGuardar").onclick = () => conBoton($("#ldGuardar"), async () => {
     await api("leads/" + id, { method: "PUT", body: { etapa: $("#ldEtapa").value, nombre: $("#ldNombre").value, telefono: $("#ldTel").value, email: $("#ldEmail").value, notas: $("#ldNotas").value } });
     aviso("Guardado");
+  });
+  $("#cbCrear").onclick = () => conBoton($("#cbCrear"), async () => {
+    const r = await api(`leads/${id}/cobrar`, { method: "POST", body: { concepto: $("#cbConcepto").value, monto: Number($("#cbMonto").value), enviar: ["instagram", "messenger", "whatsapp", "chat"].includes(l.canal) } });
+    $("#cbEstado").innerHTML = `${r.enviado ? "✅ Enviado. " : esc(r.aviso || "")} Link: <a href="${esc(r.link)}" target="_blank" rel="noopener">${esc(r.link)}</a>`;
   });
   if ($("#ldBaja")) $("#ldBaja").onclick = () => conBoton($("#ldBaja"), async () => {
     await api("leads/" + id, { method: "PUT", body: { baja: 1 } });
@@ -801,6 +826,7 @@ async function verClientes() {
 async function editarCliente(id) {
   const c = await api("clientes/" + id);
   const nut = JSON.parse(c.nutricion || "{}");
+  const chat = JSON.parse(c.chat_config || "{}"), pub = JSON.parse(c.publicacion_config || "{}"), ag = JSON.parse(c.agenda_config || "{}");
   $("#vista").innerHTML = `<p ${yo.rol === "agencia" ? "" : "hidden"}><button class="b" id="volver">← Clientes</button></p>
   <div class="tarjeta"><h2>${esc(c.nombre)}</h2>
     <div class="grilla">
@@ -841,6 +867,37 @@ async function editarCliente(id) {
     <input id="cPlayArchivo" type="file" accept=".json,application/json">
     <p class="fila"><button class="b prim" id="cPlayGuardar">Guardar Google Play</button><button class="b" id="cPlayProbar">Probar conexión</button></p>
     <p class="meta" id="cPlayEstado" style="color:var(--suave)"></p></div>
+  <div class="tarjeta"><h2>Canales de mensajes</h2>
+    <p class="meta" style="color:var(--suave)">El Vendedor contesta por el mismo canal por el que te escriben. Instagram se conecta arriba; acá Messenger, WhatsApp y el chat de tu web.</p>
+    <h3>💬 Facebook Messenger y publicaciones en Facebook</h3>
+    <div class="grilla"><div><label>ID de la página de Facebook</label><input id="kFbPagina" value="${esc(c.fb_pagina_id || "")}"></div>
+      <div><label>Token de la página ${c.fb_token ? "(guardado; pegá otro para cambiarlo)" : ""}</label><input id="kFbToken" type="password" autocomplete="off"></div></div>
+    <h3>🟢 WhatsApp (API oficial de Meta)</h3>
+    <div class="grilla"><div><label>Número (para mostrar)</label><input id="kWaNumero" value="${esc(c.wa_numero || "")}" placeholder="+54 9 351 ..."></div>
+      <div><label>ID del número (Phone number ID)</label><input id="kWaId" value="${esc(c.wa_phone_id || "")}"></div>
+      <div><label>Token permanente ${c.wa_token ? "(guardado; pegá otro para cambiarlo)" : ""}</label><input id="kWaToken" type="password" autocomplete="off"></div></div>
+    <h3>🌐 Chat en tu web</h3>
+    <div class="grilla"><div><label>Estado</label><select id="kChatActivo"><option value="0">Apagado</option><option value="1" ${chat.activo ? "selected" : ""}>Activo</option></select></div>
+      <div><label>Saludo</label><input id="kChatSaludo" value="${esc(chat.saludo || "")}"></div><div><label>Color</label><input id="kChatColor" type="color" value="${esc(chat.color || "#4b3fb0")}"></div></div>
+    <p class="meta" style="color:var(--suave)">Pegá esta línea antes de &lt;/body&gt; en tu web (el chat contesta solo, en segundos):</p>
+    <input readonly onclick="this.select()" value="${esc(`<script src="${location.origin}/chat/${id}.js" async></script>`)}">
+    <h3>📲 Publicación</h3>
+    <div class="grilla"><div><label>Máximo de posts por día</label><input id="kPorDia" type="number" min="1" max="6" value="${esc(pub.por_dia || 2)}"></div>
+      <div><label>Horarios (separados por coma)</label><input id="kHorarios" value="${esc((pub.horarios || ["12:00", "19:00"]).join(", "))}"></div>
+      <div><label>Publicar también en Facebook</label><select id="kFb"><option value="0">No</option><option value="1" ${pub.facebook ? "selected" : ""}>Sí (necesita la página conectada)</option></select></div></div>
+    <p><button class="b prim" id="kGuardar">Guardar canales y publicación</button></p></div>
+  <div class="tarjeta"><h2>📅 Agenda (Google Calendar)</h2>
+    <p class="meta" style="color:var(--suave)">El Vendedor ofrece horarios libres reales y agenda solo. Compartí tu calendario con el email de la cuenta de servicio (permiso "Hacer cambios en eventos").</p>
+    <div class="grilla"><div><label>Estado</label><select id="gActivo"><option value="0">Apagada</option><option value="1" ${ag.activo ? "selected" : ""}>Activa</option></select></div>
+      <div><label>ID del calendario (tu email o el ID del calendario)</label><input id="gCal" value="${esc(ag.calendario_id || "")}"></div>
+      <div><label>Duración (minutos)</label><input id="gDur" type="number" value="${esc(ag.duracion || 30)}"></div>
+      <div><label>Desde</label><input id="gDesde" type="time" value="${esc(ag.desde || "09:00")}"></div><div><label>Hasta</label><input id="gHasta" type="time" value="${esc(ag.hasta || "18:00")}"></div>
+      <div><label>Días (1=lun … 7=dom)</label><input id="gDias" value="${esc((ag.dias || [1, 2, 3, 4, 5]).join(","))}"></div></div>
+    <label>Cuenta de servicio de Google ${c.agenda_cuenta ? "(guardada; subí otra para cambiarla)" : "(JSON)"}</label><input id="gCuenta" type="file" accept=".json">
+    <p class="fila"><button class="b prim" id="gGuardar">Guardar agenda</button><button class="b" id="gProbar">Ver horarios libres</button></p><p class="meta" id="gEstado"></p></div>
+  <div class="tarjeta"><h2>💳 Cobros (Mercado Pago)</h2>
+    <p class="meta" style="color:var(--suave)">Para mandar links de pago desde las conversaciones. Usá el <i>Access Token de producción</i> (Mercado Pago Developers → Tus integraciones → Credenciales).</p>
+    <div class="fila"><input id="mToken" type="password" autocomplete="off" placeholder="${c.mp_token ? "(guardado; pegá otro para cambiarlo)" : "APP_USR-..."}" style="flex:1"><button class="b prim" id="mGuardar">Conectar</button></div><p class="meta" id="mEstado"></p></div>
   <div class="tarjeta"><h2>Anuncios de Meta</h2>
     <div class="grilla">
       <div><label>ID de la cuenta publicitaria</label><input id="aCuenta" value="${esc(c.ads_cuenta || "")}" placeholder="act_1234567890"></div>
@@ -899,6 +956,24 @@ async function editarCliente(id) {
     aviso("Nutrición guardada");
     dibujarPasos();
   });
+  $("#kGuardar").onclick = () => conBoton($("#kGuardar"), async () => {
+    await api(`clientes/${id}/canales`, { method: "POST", body: {
+      fb_pagina_id: $("#kFbPagina").value, fb_token: $("#kFbToken").value || undefined, wa_numero: $("#kWaNumero").value, wa_phone_id: $("#kWaId").value, wa_token: $("#kWaToken").value || undefined,
+      chat_config: { activo: $("#kChatActivo").value === "1", saludo: $("#kChatSaludo").value, color: $("#kChatColor").value },
+      publicacion_config: { por_dia: $("#kPorDia").value, horarios: $("#kHorarios").value.split(",").map((h) => h.trim()), facebook: $("#kFb").value === "1" },
+    } });
+    $("#kFbToken").value = ""; $("#kWaToken").value = "";
+    aviso("Canales guardados");
+  });
+  $("#gGuardar").onclick = () => conBoton($("#gGuardar"), async () => {
+    const archivo = $("#gCuenta").files[0];
+    const r = await api(`clientes/${id}/agenda`, { method: "POST", body: { cuenta: archivo ? await archivo.text() : undefined, config: {
+      activo: $("#gActivo").value === "1", calendario_id: $("#gCal").value, duracion: $("#gDur").value, desde: $("#gDesde").value, hasta: $("#gHasta").value,
+      dias: $("#gDias").value.split(",").map((x) => Number(x.trim())).filter(Boolean) } } });
+    $("#gEstado").textContent = r.email ? "Compartí el calendario con: " + r.email : "Guardado";
+  });
+  $("#gProbar").onclick = () => conBoton($("#gProbar"), async () => { const r = await api(`clientes/${id}/agenda-probar`, { method: "POST", body: {} }); $("#gEstado").textContent = r.error || "Horarios libres: " + (r.libres.join(" · ") || "ninguno"); });
+  $("#mGuardar").onclick = () => conBoton($("#mGuardar"), async () => { const r = await api(`clientes/${id}/mercadopago`, { method: "POST", body: { token: $("#mToken").value } }); $("#mToken").value = ""; $("#mEstado").textContent = "✅ Conectado: " + r.cuenta; });
   $("#aGuardar").onclick = () => conBoton($("#aGuardar"), async () => {
     await api(`clientes/${id}/ads`, { method: "POST", body: { cuenta: $("#aCuenta").value.trim(), pagina: $("#aPagina").value.trim(), tope: Number($("#aTope").value), link: $("#aLink").value.trim(), token: $("#aToken").value || undefined } });
     $("#aToken").value = "";
