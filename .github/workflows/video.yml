@@ -1,0 +1,40 @@
+name: Video
+
+# Lo dispara el hub: videos programados de la semana, /video en Telegram o "Generar video" en el panel.
+on:
+  workflow_dispatch:
+    inputs:
+      cliente:
+        description: "id del cliente"
+        required: true
+      pedido:
+        description: "tema (opcional)"
+        default: ""
+      producto:
+        description: "producto (opcional)"
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  video:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+      CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      HUB_URL: ${{ vars.HUB_URL || 'https://kreatit-portero.federosciano.workers.dev' }}
+      CLIENTE: ${{ inputs.cliente }}
+      PEDIDO: ${{ inputs.pedido }}
+      PRODUCTO: ${{ inputs.producto }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt imageio-ffmpeg
+      - run: python video.py "$CLIENTE" "$PEDIDO" "$PRODUCTO"

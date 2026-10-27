@@ -21,13 +21,27 @@ const AGENTES = [
     eventos: ["investigando", "investigacion"], errores: /investiga/i },
   { id: "trafficker", nombre: "Trafficker", tarea: "Arma y mide los anuncios", propuestas: ["anuncio"],
     eventos: ["anuncio"], errores: /campaña|anuncio/i },
+  { id: "editor", nombre: "Editor de video", tarea: "Edita y publica Reels", propuestas: ["video"],
+    eventos: ["generando_video", "video"], errores: /video|reel/i },
   { id: "prospector", nombre: "Prospector", tarea: "Busca negocios y les escribe propuestas", propuestas: ["prospecto"],
     eventos: ["prospeccion"], errores: /prospector|prospección/i },
   { id: "seguridad", nombre: "Seguridad", tarea: "Vigila la seguridad de los sistemas", propuestas: [],
     eventos: ["seguridad"], errores: /^$/ },
+  { id: "gerente", nombre: "Gerente", tarea: "Coordina al equipo y te resume el día", propuestas: [],
+    eventos: ["resumen"], errores: /^$/ },
+  { id: "revisor", nombre: "Revisor de calidad", tarea: "Revisa todo antes de que salga", propuestas: [],
+    eventos: ["revisor"], errores: /^$/ },
+  { id: "publicador", nombre: "Publicador", tarea: "Programa y publica en Instagram y Facebook", propuestas: [],
+    eventos: ["programada", "publicada"], errores: /facebook|publicar/i },
+  { id: "agenda", nombre: "Agenda", tarea: "Agenda reuniones y turnos", propuestas: [],
+    eventos: ["agenda"], errores: /agendar|calendar/i },
+  { id: "cobranzas", nombre: "Cobranzas", tarea: "Manda links de pago y sigue los cobros", propuestas: [],
+    eventos: ["cobro", "cobrado"], errores: /mercado pago|cobro/i },
+  { id: "seo", nombre: "Redactor SEO", tarea: "Escribe artículos para el blog", propuestas: ["articulo"],
+    eventos: ["escribiendo", "articulo"], errores: /artículo|wordpress/i },
 ];
 
-const EN_CURSO = { generando: "propuesta", investigando: "investigacion" }; // evento de inicio → evento que lo termina
+const EN_CURSO = { generando: "propuesta", investigando: "investigacion", generando_video: "video", escribiendo: "articulo" }; // evento de inicio → evento que lo termina
 
 export async function estadoOficina(env, clienteId) {
   const c = await env.DB.prepare("SELECT * FROM clientes WHERE id = ?").bind(clienteId).first();
@@ -57,10 +71,23 @@ export async function estadoOficina(env, clienteId) {
       proxima: c.ig_token ? `Informe semanal: lunes 9:30 · midió por última vez ${c.ig_sincronizado ? "hace " + Math.round(hace(c.ig_sincronizado)) + " min" : "nunca"}` : "Esperando que conectes Instagram" },
     investigador: { dato: `${await contar("SELECT COUNT(*) n FROM informes WHERE cliente_id = ? AND tipo = 'mercado'")} investigaciones`,
       proxima: JSON.parse(c.investigacion || "{}").temas?.length ? "Investigación semanal: miércoles 9:30" : "Cargá temas en Investigación para que arranque" },
+    editor: { dato: `${await contar("SELECT COUNT(*) n FROM propuestas WHERE cliente_id = ? AND tipo = 'video' AND estado = 'publicada'")} Reels publicados`,
+      proxima: c.ig_token ? `${JSON.parse(c.video_config || "{}").por_semana ?? 2} Reels por semana (a las 10)` : "Esperando que conectes Instagram" },
     prospector: { dato: `${await contar("SELECT COUNT(*) n FROM envios_frio WHERE cliente_id = ? AND estado = 'enviado'")} propuestas enviadas · ${await contar("SELECT COUNT(*) n FROM prospectos WHERE cliente_id = ? AND estado = 'respondio'")} respondieron`,
       proxima: c.prospeccion_correo ? "Envíos a las 10 y a las 16 (días hábiles)" : "Esperando que configures la casilla de prospección" },
     seguridad: { dato: `${await contar("SELECT COUNT(*) n FROM seguridad_activos WHERE cliente_id = ?")} sitios vigilados · ${await contar("SELECT COUNT(*) n FROM seguridad_hallazgos WHERE cliente_id = ? AND nivel = 'aviso'")} avisos`,
       proxima: "Revisa los sitios cada 15 minutos y hace un chequeo profundo cada mañana" },
+    gerente: { dato: `${pendientes.reduce((t, p) => t + p.n, 0)} cosas esperando tu OK`, proxima: "Resumen del día a las 8:30 (o /resumen en Telegram)" },
+    revisor: { dato: `${await contar("SELECT COUNT(*) n FROM propuestas WHERE cliente_id = ? AND json_extract(datos, '$.revision.ok') = 0 AND creado > datetime('now', '-30 days')")} problemas detectados (30 días)`,
+      proxima: "Revisa cada propuesta nueva en unos minutos" },
+    publicador: { dato: `${await contar("SELECT COUNT(*) n FROM propuestas WHERE cliente_id = ? AND estado = 'programada'")} en cola`,
+      proxima: `Hasta ${JSON.parse(c.publicacion_config || "{}").por_dia || 2} posts por día${JSON.parse(c.publicacion_config || "{}").facebook ? ", también en Facebook" : ""}` },
+    agenda: { dato: `${await contar("SELECT COUNT(*) n FROM eventos WHERE cliente_id = ? AND tipo = 'agenda' AND creado > datetime('now', '-30 days')")} reuniones agendadas (30 días)`,
+      proxima: JSON.parse(c.agenda_config || "{}").activo ? "Ofrece horarios libres en las conversaciones" : "Apagada (se activa en Mi cuenta → Agenda)" },
+    cobranzas: { dato: `$${Math.round(await contar("SELECT COALESCE(SUM(monto), 0) n FROM cobros WHERE cliente_id = ? AND estado = 'pagado'"))} cobrados · ${await contar("SELECT COUNT(*) n FROM cobros WHERE cliente_id = ? AND estado = 'pendiente'")} pendientes`,
+      proxima: c.mp_token ? "Avisa al cobrar y recuerda los pendientes a los 2 días" : "Esperando que conectes Mercado Pago" },
+    seo: { dato: `${await contar("SELECT COUNT(*) n FROM propuestas WHERE cliente_id = ? AND tipo = 'articulo' AND estado = 'publicada'")} artículos publicados`,
+      proxima: JSON.parse(c.seo_config || "{}").activo ? "Un artículo por semana (jueves)" : "Apagado (se activa en Mi cuenta → Blog)" },
     trafficker: { dato: `${await contar("SELECT COUNT(*) n FROM campanas WHERE cliente_id = ? AND estado = 'ACTIVE'")} campañas activas`,
       proxima: c.ads_token ? "Mide las campañas cada 3 horas" : "Esperando que conectes la cuenta publicitaria" },
   };
@@ -72,6 +99,9 @@ export async function estadoOficina(env, clienteId) {
     ? { estado: "error", globo: `Hay ${criticos.length} problema${criticos.length > 1 ? "s" : ""} crítico${criticos.length > 1 ? "s" : ""}: ${criticos.map((x) => x.chequeo + " en " + x.activo).join(", ")}`.slice(0, 140) }
     : revisado?.t && hace(revisado.t) < 20 ? { estado: "trabajando", globo: "Vigilando los sitios: todo en orden" } : { estado: "descanso", globo: "" };
 
+  const sinRevisar = (await env.DB.prepare("SELECT COUNT(*) n FROM propuestas WHERE cliente_id = ? AND estado = 'pendiente' AND json_extract(datos, '$.revision') IS NULL").bind(clienteId).first()).n;
+  const proxima = await env.DB.prepare("SELECT programada FROM propuestas WHERE cliente_id = ? AND estado = 'programada' ORDER BY programada LIMIT 1").bind(clienteId).first();
+
   const agentes = AGENTES.map((a) => {
     const propios = eventos.filter((e) => a.eventos.includes(e.tipo));
     const errores = eventos.filter((e) => e.tipo === "error" && a.errores.test(e.detalle || ""));
@@ -82,6 +112,8 @@ export async function estadoOficina(env, clienteId) {
     const pend = pendientes.filter((p) => a.propuestas.includes(p.tipo)).reduce((t, p) => t + p.n, 0);
     let estado = "descanso";
     let globo = "";
+    if (a.id === "revisor" && sinRevisar) return { ...a, errores: undefined, eventos: undefined, estado: "trabajando", globo: `Revisando ${sinRevisar} propuesta${sinRevisar > 1 ? "s" : ""}`, pendientes: 0, ...datos[a.id], historial: propios.slice(0, 8) };
+    if (a.id === "publicador" && proxima) return { ...a, errores: undefined, eventos: undefined, estado: "trabajando", globo: `Próxima publicación: ${proxima.programada} UTC`, pendientes: 0, ...datos[a.id], historial: propios.slice(0, 8) };
     if (a.id === "seguridad") return { ...a, errores: undefined, eventos: undefined, ...estadoSeguridad, pendientes: 0, ...datos[a.id],
       historial: propios.slice(0, 8) };
     if (error) { estado = "error"; globo = "Tuve un problema: " + error.detalle; }

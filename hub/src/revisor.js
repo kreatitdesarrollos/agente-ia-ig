@@ -69,7 +69,10 @@ No marques cuestiones de estilo ni gustos personales: si el texto es correcto, "
     }
     return;
   }
-  if (!revision.ok) await avisar(env, p, revision, "⚠️ El revisor de calidad encontró algo");
+  if (!revision.ok) {
+    await registrar(env, p.cliente_id, "revisor", `${p.titulo}: ${revision.problemas.join(" / ")}`);
+    await avisar(env, p, revision, "⚠️ El revisor de calidad encontró algo");
+  }
 }
 
 async function marcar(env, id, datos, revision) {

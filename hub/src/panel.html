@@ -272,6 +272,8 @@ function tarjetaPropuesta(p, recargar) {
 }
 
 function tarjetaSegunTipo(p, recargar) {
+  if (p.tipo === "articulo") return tarjetaArticulo(p, recargar);
+  if (p.tipo === "video") return tarjetaVideo(p, recargar);
   if (p.tipo === "respuesta") return tarjetaRespuesta(p, recargar);
   if (p.tipo === "mensaje") return tarjetaMensaje(p, recargar);
   if (p.tipo === "resena") return tarjetaResena(p, recargar);
@@ -298,6 +300,50 @@ function tarjetaSegunTipo(p, recargar) {
     const cambios = editable ? { caption: $(".caption", el).value, hashtags: $(".hashtags", el).value } : {};
     const r = await api(`propuestas/${p.id}/${b.dataset.a}`, { method: "POST", body: cambios });
     aviso(r.enlace ? "🚀 Publicado" : r.nota || (b.dataset.a === "otra" ? "Generando otra versión (1–2 min)" : "Listo"));
+    recargar();
+  })));
+  return el;
+}
+
+function tarjetaArticulo(p, recargar) {
+  const d = p.datos;
+  const el = document.createElement("div");
+  el.className = "tarjeta prop";
+  el.innerHTML = `
+    <div class="meta"><span class="chip ${esc(p.estado)}">${esc(p.estado)}</span> ${esc(p.cliente_nombre)} · 🌐 artículo para el blog · ${esc(d.palabras)} palabras</div>
+    <h2>${esc(d.titulo)}</h2><p class="meta">Búsqueda en Google: "${esc(d.palabra_clave)}"<br>${esc(d.meta)}</p>
+    <details><summary style="cursor:pointer">Leer el artículo</summary><iframe sandbox title="Artículo" style="width:100%;height:420px;border:1px solid var(--borde);border-radius:8px;background:#fff"></iframe>
+      <p><button class="b" data-copiar>Copiar HTML</button></p></details>
+    ${p.resultado.enlace ? `<p><a href="${esc(p.resultado.enlace)}" target="_blank" rel="noopener">Ver publicado ↗</a></p>` : ""}
+    ${p.resultado.error ? `<p class="error">${esc(p.resultado.error)}</p>` : ""}
+    <div class="fila" style="margin-top:12px">${
+      p.estado === "pendiente" ? `<button class="b prim" data-a="aprobar">✅ Publicar</button><button class="b" data-a="otra">🔄 Otro</button><button class="b peligro" data-a="descartar">Descartar</button>` :
+      p.estado === "error" ? `<button class="b prim" data-a="reintentar">Reintentar</button>` : ""}</div>`;
+  $("iframe", el).srcdoc = `<!doctype html><meta charset="utf-8"><style>body{font:16px/1.6 Georgia,serif;padding:12px;color:#222}</style><h1 style="font-family:system-ui">${esc(d.titulo)}</h1>${d.html}`;
+  $("[data-copiar]", el).onclick = async () => { try { await navigator.clipboard.writeText(d.html); aviso("HTML copiado"); } catch { aviso("No se pudo copiar"); } };
+  el.querySelectorAll("[data-a]").forEach((b) => (b.onclick = () => conBoton(b, async () => { const r = await api(`propuestas/${p.id}/${b.dataset.a}`, { method: "POST", body: {} }); aviso(r.error || r.nota || "Listo"); recargar(); })));
+  return el;
+}
+
+function tarjetaVideo(p, recargar) {
+  const d = p.datos;
+  const el = document.createElement("div");
+  el.className = "tarjeta prop";
+  const editable = p.estado === "pendiente" || p.estado === "error";
+  el.innerHTML = `
+    <video src="/vid/${esc(p.id)}.mp4" poster="/img/${esc(p.id)}.jpg" controls playsinline preload="none" style="width:100%;max-height:520px;border-radius:8px;background:#000"></video>
+    <div class="meta"><span class="chip ${esc(p.estado)}">${esc(p.estado)}</span> ${esc(p.cliente_nombre)} · 🎬 Reel de ${esc(d.segundos || "?")} s</div>
+    <h2>${esc(p.titulo)}</h2>
+    ${editable ? `<label>Texto</label><textarea class="caption">${esc(d.caption)}</textarea><label>Hashtags</label><input class="hashtags" value="${esc(d.hashtags)}">` :
+      `<p style="white-space:pre-wrap">${esc(d.caption)}</p>`}
+    ${p.resultado.error ? `<p class="error">${esc(p.resultado.error)}</p>` : ""}
+    ${p.resultado.enlace ? `<p><a href="${esc(p.resultado.enlace)}" target="_blank" rel="noopener">Ver en Instagram ↗</a></p>` : ""}
+    <div class="fila" style="margin-top:12px">${
+      p.estado === "pendiente" ? `<button class="b prim" data-a="aprobar">✅ Publicar</button><button class="b" data-a="otra">🔄 Otro</button><button class="b peligro" data-a="descartar">Descartar</button>` :
+      p.estado === "error" ? `<button class="b prim" data-a="reintentar">Reintentar</button><button class="b peligro" data-a="descartar">Descartar</button>` : ""}</div>`;
+  el.querySelectorAll("[data-a]").forEach((b) => (b.onclick = () => conBoton(b, async () => {
+    const r = await api(`propuestas/${p.id}/${b.dataset.a}`, { method: "POST", body: editable ? { caption: $(".caption", el).value, hashtags: $(".hashtags", el).value } : {} });
+    aviso(r.error || r.nota || "Listo");
     recargar();
   })));
   return el;
@@ -796,7 +842,16 @@ function verGenerar() {
     <label for="gCliente">Cliente</label><select id="gCliente">${opcionesClientes()}</select>
     <label for="gPedido">Tema (opcional)</label><input id="gPedido" placeholder="ej.: sofi, jefe de trenes, app vagon, promo de verano...">
     <p class="meta" style="color:var(--suave)">Si el tema nombra un producto con fotos cargadas, usa sus capturas. Vacío = lo que toca hoy según el calendario.</p>
-    <button class="b prim" id="gBoton">Generar</button></div>`;
+    <div class="fila"><button class="b prim" id="gBoton">Generar post</button><button class="b" id="gVideo">🎬 Generar Reel</button><button class="b" id="gArticulo">🌐 Escribir artículo para el blog</button></div>
+    <p class="meta" style="color:var(--suave)">El Reel tarda 3 a 5 minutos. Usa tus fotos, capturas o videos del producto y la música que subas como producto "musica".</p></div>`;
+  $("#gArticulo").onclick = () => conBoton($("#gArticulo"), async () => {
+    await api("generar-articulo", { method: "POST", body: { cliente: $("#gCliente").value, tema: $("#gPedido").value } });
+    aviso("Escribiendo el artículo: llega a 'Para aprobar' en 1–2 minutos");
+  });
+  $("#gVideo").onclick = () => conBoton($("#gVideo"), async () => {
+    await api("generar-video", { method: "POST", body: { cliente: $("#gCliente").value, pedido: $("#gPedido").value } });
+    aviso("Armando el Reel: te llega a Telegram y a 'Para aprobar' en 3–5 minutos");
+  });
   $("#gBoton").onclick = () => conBoton($("#gBoton"), async () => {
     await api("generar", { method: "POST", body: { cliente: $("#gCliente").value, pedido: $("#gPedido").value } });
     aviso("Generando... te llega a Telegram y a 'Para aprobar' en 1–2 minutos");
@@ -826,7 +881,7 @@ async function verClientes() {
 async function editarCliente(id) {
   const c = await api("clientes/" + id);
   const nut = JSON.parse(c.nutricion || "{}");
-  const chat = JSON.parse(c.chat_config || "{}"), pub = JSON.parse(c.publicacion_config || "{}"), ag = JSON.parse(c.agenda_config || "{}");
+  const chat = JSON.parse(c.chat_config || "{}"), pub = JSON.parse(c.publicacion_config || "{}"), ag = JSON.parse(c.agenda_config || "{}"), seoCfg = JSON.parse(c.seo_config || "{}");
   $("#vista").innerHTML = `<p ${yo.rol === "agencia" ? "" : "hidden"}><button class="b" id="volver">← Clientes</button></p>
   <div class="tarjeta"><h2>${esc(c.nombre)}</h2>
     <div class="grilla">
@@ -856,8 +911,8 @@ async function editarCliente(id) {
     <p><button class="b prim" id="cGuardar">Guardar</button></p>
   </div>
   <div class="tarjeta"><h2>Fotos y capturas por producto</h2>
-    <p class="meta" style="color:var(--suave)">El producto es lo que escribís en /nuevo (ej. "sofi"). Dejalo vacío para fotos propias sueltas (días con foto_propia).</p>
-    <div class="fila"><input id="fProducto" placeholder="producto" style="max-width:220px"><input id="fArchivos" type="file" accept="image/*" multiple style="max-width:320px"><button class="b prim" id="fSubir">Subir</button></div>
+    <p class="meta" style="color:var(--suave)">El producto es lo que escribís en /nuevo (ej. "sofi"). Dejalo vacío para fotos propias sueltas. Podés subir también <b>videos</b> (para los Reels) y <b>música libre de derechos</b> con el producto "musica". Máximo 24 MB por archivo.</p>
+    <div class="fila"><input id="fProducto" placeholder="producto" style="max-width:220px"><input id="fArchivos" type="file" accept="image/*,video/mp4,video/quicktime,audio/mpeg,audio/mp4,audio/wav" multiple style="max-width:320px"><button class="b prim" id="fSubir">Subir</button></div>
     <div id="fotos"></div>
   </div>
   <div class="tarjeta"><h2>Google Play (reseñas)</h2>
@@ -886,6 +941,13 @@ async function editarCliente(id) {
       <div><label>Horarios (separados por coma)</label><input id="kHorarios" value="${esc((pub.horarios || ["12:00", "19:00"]).join(", "))}"></div>
       <div><label>Publicar también en Facebook</label><select id="kFb"><option value="0">No</option><option value="1" ${pub.facebook ? "selected" : ""}>Sí (necesita la página conectada)</option></select></div></div>
     <p><button class="b prim" id="kGuardar">Guardar canales y publicación</button></p></div>
+  <div class="tarjeta"><h2>🌐 Blog (Redactor SEO)</h2>
+    <p class="meta" style="color:var(--suave)">Un artículo por semana (jueves) sobre lo que la gente busca en Google de estos temas. Con WordPress se publica solo; si no, queda en una página propia y lo podés copiar a tu web.</p>
+    <div class="grilla"><div><label>Estado</label><select id="bActivo"><option value="0">Apagado</option><option value="1" ${seoCfg.activo ? "selected" : ""}>Activo</option></select></div>
+      <div><label>Temas (separados por coma)</label><input id="bTemas" value="${esc((seoCfg.temas || []).join(", "))}" placeholder="sistema de gestión hotelera, app de trenes argentina"></div></div>
+    <h3>WordPress (opcional)</h3><div class="grilla"><div><label>Dirección del sitio</label><input id="bWpUrl" placeholder="https://miweb.com"></div>
+      <div><label>Usuario</label><input id="bWpUsuario"></div><div><label>Contraseña de aplicación ${c.wp_config ? "(guardada)" : ""}</label><input id="bWpClave" type="password" autocomplete="off"></div></div>
+    <p><button class="b prim" id="bGuardar">Guardar blog</button></p></div>
   <div class="tarjeta"><h2>📅 Agenda (Google Calendar)</h2>
     <p class="meta" style="color:var(--suave)">El Vendedor ofrece horarios libres reales y agenda solo. Compartí tu calendario con el email de la cuenta de servicio (permiso "Hacer cambios en eventos").</p>
     <div class="grilla"><div><label>Estado</label><select id="gActivo"><option value="0">Apagada</option><option value="1" ${ag.activo ? "selected" : ""}>Activa</option></select></div>
@@ -965,6 +1027,12 @@ async function editarCliente(id) {
     $("#kFbToken").value = ""; $("#kWaToken").value = "";
     aviso("Canales guardados");
   });
+  $("#bGuardar").onclick = () => conBoton($("#bGuardar"), async () => {
+    await api(`clientes/${id}/blog`, { method: "POST", body: { config: { activo: $("#bActivo").value === "1", temas: $("#bTemas").value.split(",") },
+      wp: $("#bWpUrl").value ? { url: $("#bWpUrl").value, usuario: $("#bWpUsuario").value, clave: $("#bWpClave").value } : undefined } });
+    $("#bWpClave").value = "";
+    aviso("Blog guardado");
+  });
   $("#gGuardar").onclick = () => conBoton($("#gGuardar"), async () => {
     const archivo = $("#gCuenta").files[0];
     const r = await api(`clientes/${id}/agenda`, { method: "POST", body: { cuenta: archivo ? await archivo.text() : undefined, config: {
@@ -1036,6 +1104,7 @@ async function editarCliente(id) {
   });
   $("#fSubir").onclick = () => conBoton($("#fSubir"), async () => {
     for (const archivo of $("#fArchivos").files) {
+      if (archivo.size > 24e6) throw new Error(`"${archivo.name}" pesa más de 24 MB`);
       const f = new FormData();
       f.append("cliente", id); f.append("producto", $("#fProducto").value); f.append("archivo", archivo);
       await api("fotos", { method: "POST", body: f });
@@ -1048,7 +1117,9 @@ async function editarCliente(id) {
     const grupos = {};
     for (const f of fotos) (grupos[f.producto || "(fotos propias)"] ||= []).push(f);
     $("#fotos").innerHTML = Object.keys(grupos).length ? Object.entries(grupos).map(([prod, fs]) => `<h3>${esc(prod)}</h3><div class="fotos">${
-      fs.map((f) => `<figure><img src="/api/panel/fotos/${esc(f.id)}" alt="${esc(f.nombre)}" loading="lazy"><figcaption>${esc(f.nombre)}</figcaption><button data-f="${esc(f.id)}" title="Borrar">×</button></figure>`).join("")
+      fs.map((f) => `<figure>${(f.tipo || "").startsWith("video/") ? `<video src="/api/panel/fotos/${esc(f.id)}" muted preload="metadata" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:6px"></video>`
+        : (f.tipo || "").startsWith("audio/") ? `<div style="aspect-ratio:1;display:grid;place-items:center;font-size:40px;background:var(--fondo);border-radius:6px">🎵</div>`
+        : `<img src="/api/panel/fotos/${esc(f.id)}" alt="${esc(f.nombre)}" loading="lazy">`}<figcaption>${esc(f.nombre)}</figcaption><button data-f="${esc(f.id)}" title="Borrar">×</button></figure>`).join("")
     }</div>`).join("") : '<div class="vacio">Sin fotos todavía</div>';
     $("#fotos").querySelectorAll("[data-f]").forEach((b) => (b.onclick = () => conBoton(b, async () => {
       if (!confirm("¿Borrar esta foto?")) return;
@@ -1104,9 +1175,16 @@ const ASPECTO = {
   investigador: { camisa: "#6a994e", pelo: "#c9c9c9", piel: "#f1c27d" },
   trafficker: { camisa: "#d62828", pelo: "#ffb703", piel: "#e0ac69" },
   prospector: { camisa: "#0077b6", pelo: "#5e3023", piel: "#f1c27d" },
+  editor: { camisa: "#9d4edd", pelo: "#ff006e", piel: "#ffdbac" },
+  gerente: { camisa: "#343a40", pelo: "#adb5bd", piel: "#e0ac69" },
+  revisor: { camisa: "#ffb703", pelo: "#3d2b1f", piel: "#f1c27d" },
+  publicador: { camisa: "#06d6a0", pelo: "#1d1d1d", piel: "#8d5524" },
+  agenda: { camisa: "#ef476f", pelo: "#6d4c41", piel: "#ffdbac" },
+  cobranzas: { camisa: "#2a9d8f", pelo: "#111111", piel: "#c68642" },
+  seo: { camisa: "#118ab2", pelo: "#e9c46a", piel: "#ffdbac" },
   seguridad: { camisa: "#212529", pelo: "#111111", piel: "#c68642" },
 };
-const ICONO_AGENTE = { redactor: "✍️", community: "💬", vendedor: "🤝", atencion: "⭐", emails: "✉️", analista: "📊", investigador: "🔎", trafficker: "📣", prospector: "📨", seguridad: "🛡️" };
+const ICONO_AGENTE = { redactor: "✍️", community: "💬", vendedor: "🤝", atencion: "⭐", emails: "✉️", analista: "📊", investigador: "🔎", trafficker: "📣", prospector: "📨", seguridad: "🛡️", editor: "🎬", gerente: "🧑‍💼", revisor: "✅", publicador: "📲", agenda: "📅", cobranzas: "💳", seo: "🌐" };
 const TEXTO_ESTADO = { trabajando: "trabajando", esperando: "esperando tu OK", descanso: "tomando un café", error: "con un problema" };
 
 // Oficina isométrica: una sala con los 8 agentes en sus escritorios. Todo dibujado en SVG (sin imágenes externas).
@@ -1127,8 +1205,11 @@ const planta = (x, y, alto = 1) => caja(x, y, 0, 0.5, 0.5, 0.45, "#b5651d", "#8b
     return `<ellipse cx="${px + dx * alto}" cy="${py + dy * alto}" rx="${9 * alto}" ry="${5 * alto}" fill="${k % 2 ? "#2d6a4f" : "#40916c"}" transform="rotate(${dx * 2} ${px + dx * alto} ${py + dy * alto})"/>`;
   }).join("");
 
-const PUESTOS = { redactor: [1.6, 2.2], community: [5.4, 2.2], vendedor: [9.2, 2.2], atencion: [13, 2.2], prospector: [16.8, 2.2],
-  emails: [1.6, 6.4], analista: [5.4, 6.4], investigador: [9.2, 6.4], trafficker: [13, 6.4], seguridad: [16.8, 6.4] };
+const PUESTOS = {
+  redactor: [1.6, 2.2], community: [5.4, 2.2], vendedor: [9.2, 2.2], atencion: [13, 2.2], prospector: [16.8, 2.2], editor: [20.6, 2.2],
+  emails: [1.6, 6.4], analista: [5.4, 6.4], investigador: [9.2, 6.4], trafficker: [13, 6.4], seguridad: [16.8, 6.4], seo: [20.6, 6.4],
+  gerente: [1.6, 10.6], revisor: [5.4, 10.6], publicador: [9.2, 10.6], agenda: [13, 10.6], cobranzas: [16.8, 10.6],
+};
 
 // Lo fijo de cada puesto: escritorio, monitor (según el estado real), teclado, taza y silla.
 function puestoFijo(a) {
@@ -1169,28 +1250,32 @@ function cartelPuesto(a) {
 
 // ---------- vida en la oficina: cada agente es un personaje que se mueve según su estado real
 const LUGARES = {
-  cafe: [[1.3, 7.8], [1.3, 8.7], [0.55, 7.15]],        // al lado de la cafetera (hasta 3 a la vez)
-  ventana: [[4.45, 1.05], [8.25, 1.05], [12.05, 1.05], [15.85, 1.05]], // frente a los ventanales, entre los escritorios de atrás
+  cafe: [[1.3, 7.75], [1.3, 8.55], [1.15, 7.0]],       // al lado de la cafetera (hasta 3 a la vez)
+  ventana: [[4.45, 1.05], [8.25, 1.05], [12.05, 1.05], [15.85, 1.05], [19.65, 1.05]], // frente a los ventanales
   pizarra: [[0.75, 2.9]],
 };
-const PASILLO = 5.0; // el pasillo entre las dos filas de escritorios
+const PASILLOS = [5.0, 9.2, 13.4];                       // uno delante de cada fila de escritorios
+const CALLES = [1.25, 4.45, 8.25, 12.05, 15.85, 19.65, 23.45]; // entre las columnas: para pasar de un pasillo a otro
 const VELOCIDAD = 1.3; // unidades por segundo
 const vida = { actores: {}, raf: null, ultimo: 0 };
 
 const silla = (id) => { const [dx, dy] = PUESTOS[id]; return [dx + 0.95, dy + 1.55]; };
 const alLado = (id) => { const [dx, dy] = PUESTOS[id]; return [dx + 2.35, dy + 0.9]; }; // donde espera parado tu OK
-const deAdelante = (id) => PUESTOS[id][1] > PASILLO;
+const pasilloDe = (y) => PASILLOS.find((p) => p >= y - 0.01) ?? PASILLOS[PASILLOS.length - 1];
 
-// Camino por los pasillos desde donde está hasta un destino (evita atravesar escritorios).
-function ruta(act, destino, aSilla = false) {
-  const [x0, y0] = act.pos, [xd, yd] = destino;
-  const salir = [];
-  if (act.modo.startsWith("sentado") && deAdelante(act.id)) salir.push([PUESTOS[act.id][0] - 0.35, y0], [PUESTOS[act.id][0] - 0.35, PASILLO]);
-  else if (Math.abs(y0 - PASILLO) > 0.01) salir.push([x0, PASILLO]);
-  const llegar = [];
-  if (aSilla && deAdelante(act.id)) llegar.push([PUESTOS[act.id][0] - 0.35, PASILLO], [PUESTOS[act.id][0] - 0.35, yd]);
-  else llegar.push([xd, PASILLO]);
-  return [...salir, ...llegar, destino];
+// Camino por pasillos y calles desde donde está hasta un destino (nunca atraviesa escritorios):
+// baja derecho a su pasillo, si hace falta cambia de pasillo por la calle más cercana, y sube derecho al destino.
+function ruta(act, destino) {
+  const [x0, y0] = act.pos, [x1, y1] = destino;
+  const p0 = pasilloDe(y0), p1 = pasilloDe(y1);
+  const puntos = [];
+  if (Math.abs(y0 - p0) > 0.01) puntos.push([x0, p0]);
+  if (p0 !== p1) {
+    const calle = CALLES.reduce((a, b) => (Math.abs(b - (x0 + x1) / 2) < Math.abs(a - (x0 + x1) / 2) ? b : a));
+    puntos.push([calle, p0], [calle, p1]);
+  }
+  puntos.push([x1, p1], destino);
+  return puntos;
 }
 
 function ocupar(lugar, id) {
@@ -1209,7 +1294,7 @@ function irA(act, lugarId, modoAlLlegar, segundos) {
 
 function volverAlPuesto(act, modo) {
   act.lugar = null;
-  act.camino = modo === "parado-espera" ? ruta(act, alLado(act.id)) : ruta(act, silla(act.id), true);
+  act.camino = ruta(act, modo === "parado-espera" ? alLado(act.id) : silla(act.id));
   act.modo = "caminando";
   act.alLlegar = { modo, segundos: 0 };
 }
@@ -1342,14 +1427,14 @@ function actualizarActores(agentes) {
 }
 
 function salaOficina(agentes) {
-  const L = 20.5, D = 10, H = 3.4; // largo (x), fondo (y) y alto de la sala
+  const L = 24.4, D = 14.4, H = 3.4; // largo (x), fondo (y) y alto de la sala
   let s = "";
   // paredes del fondo
   s += poli("#dfe3ea", P(0, 0, 0), P(L, 0, 0), P(L, 0, H), P(0, 0, H));
   s += poli("#c9ced8", P(0, 0, 0), P(0, D, 0), P(0, D, H), P(0, 0, H));
   s += caja(-0.25, -0.25, H, L + 0.25, 0.25, 0.12, "#f8f9fa", "#e9ecef", "#dee2e6") + caja(-0.25, 0, H, 0.25, D, 0.12, "#f8f9fa", "#e9ecef", "#dee2e6");
   // ventanales en la pared del fondo
-  for (let k = 0; k < 7; k++) {
+  for (let k = 0; 5.6 + k * 2.1 + 2.2 < L; k++) {
     const x = 5.6 + k * 2.1;
     s += poli("#f1f3f5", P(x - 0.08, 0, 0.55), P(x + 1.78, 0, 0.55), P(x + 1.78, 0, 3.05), P(x - 0.08, 0, 3.05));
     s += poli("#4d7ea8", P(x, 0, 0.62), P(x + 1.7, 0, 0.62), P(x + 1.7, 0, 2.98), P(x, 0, 2.98));
@@ -1372,7 +1457,7 @@ function salaOficina(agentes) {
   for (let y = 0.5; y < D; y += 0.5) { const [x1, y1] = P(0, y), [x2, y2] = P(L, y); s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#8b5e34" stroke-width="0.7" opacity=".6"/>`; }
   for (let x = 2; x < L; x += 2.7) for (let y = 0; y < D; y += 1) { const o = (y % 2) * 1.3; if (x + o >= L) continue; const [x1, y1] = P(x + o, y), [x2, y2] = P(x + o, y + 0.5); s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#8b5e34" stroke-width="0.7" opacity=".5"/>`; }
   // alfombra, máquina de café y plantas
-  s += poli("#577590", P(4.2, 4.6, 0.01), P(16.4, 4.6, 0.01), P(16.4, 5.6, 0.01), P(4.2, 5.6, 0.01));
+  for (const y of [4.6, 8.8]) s += poli("#577590", P(4.2, y, 0.01), P(L - 4, y, 0.01), P(L - 4, y + 1, 0.01), P(4.2, y + 1, 0.01));
   s += caja(0.1, 7.6, 0, 0.9, 0.9, 1.0, "#6c757d", "#495057", "#5c636a") + caja(0.25, 7.75, 1.0, 0.55, 0.45, 0.5, "#212529", "#343a40", "#2b3035");
   s += planta(L - 0.9, 0.3, 1.3) + planta(0.3, 0.3, 1.1) + planta(L - 0.9, 9.2, 1.2);
   // puestos de atrás hacia adelante, los personajes (que se mueven) y arriba de todo los carteles

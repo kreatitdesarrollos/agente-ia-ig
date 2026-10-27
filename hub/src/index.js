@@ -22,6 +22,7 @@ import {
   crearPublicoInstagram, actualizarPublicoLeads,
 } from "./anuncios.js";
 import { estadoOficina } from "./oficina.js";
+import { apiSeoAgente, vistaPreviaArticulo, ejecutarArticulo, paginaBlog, articulosSemanales, guardarSeo } from "./seo.js";
 import { revisarPendientes, usarCorreccion } from "./revisor.js";
 import { turnoDePublicacion, publicarProgramadas, publicarEnFacebook } from "./publicador.js";
 import { armarResumen, resumenesDiarios } from "./gerente.js";
@@ -84,6 +85,8 @@ async function rutear(req, env, ctx) {
   if (mp && req.method === "POST") return avisoMercadoPago(req, env, mp[1]);
   const lead = ruta.match(/^\/lead\/([\w-]+)$/);
   if (lead) return leadWeb(req, env, lead[1]);
+  const blog = ruta.match(/^\/blog\/([\w-]+)\/([\w-]+)$/);
+  if (blog) return paginaBlog(env, blog[1], blog[2]);
   const bajaFrio = ruta.match(/^\/baja-frio\/([\w.-]+)$/);
   if (bajaFrio) return paginaBajaFrio(env, bajaFrio[1]);
   const baja = ruta.match(/^\/baja\/([\w.-]+)$/);
@@ -218,6 +221,15 @@ async function comandoTelegram(env, yo, chat, texto, mensaje) {
 
   if (base === "/start" || base === "/panel") return responder(env, chat, `Panel: ${env.URL_PUBLICA}/panel (usuario: ${yo.usuario})`);
 
+  if (base === "/video") {
+    let cliente = yo.rol === "agencia" ? env.CLIENTE_DEFAULT : yo.cliente_id;
+    if (resto[0]?.startsWith("@") && yo.rol === "agencia") cliente = resto.shift().slice(1).toLowerCase();
+    const pedido = resto.join(" ").trim();
+    await registrar(env, cliente, "generando_video", pedido || "Reel");
+    await despacharWorkflow(env, "video.yml", { cliente, pedido, producto: "" });
+    return responder(env, chat, `🎬 Armando un Reel${pedido ? " sobre: " + pedido : ""}... (3 a 5 minutos)`);
+  }
+
   if (base === "/resumen") {
     let cliente = yo.rol === "agencia" ? env.CLIENTE_DEFAULT : yo.cliente_id;
     if (resto[0]?.startsWith("@") && yo.rol === "agencia") cliente = resto[0].slice(1).toLowerCase();
@@ -275,6 +287,19 @@ async function enviarVistaPrevia(env, id) {
   if (p.tipo === "resena") return vistaPreviaResena(env, id);
   if (p.tipo === "email") return vistaPreviaEmail(env, id);
   if (p.tipo === "anuncio") return vistaPreviaAnuncio(env, id);
+  if (p.tipo === "articulo") return vistaPreviaArticulo(env, id);
+  if (p.tipo === "video") {
+    const d = JSON.parse(p.datos);
+    const botones = { inline_keyboard: [[{ text: "✅ Publicar", callback_data: "ok:" + id }, { text: "🔄 Otro", callback_data: "otra:" + id }, { text: "❌ Descartar", callback_data: "no:" + id }]] };
+    for (const chat of await destinatarios(env, p.cliente_id, true)) {
+      const v = await tg(env, "sendVideo", { chat_id: chat, video: `${env.URL_PUBLICA}/vid/${id}.mp4?v=${Date.now()}`, caption: `🎬 ${p.cliente_nombre}: Reel "${p.titulo}" (${d.segundos || "?"} s)`, supports_streaming: true });
+      const m = await tg(env, "sendMessage", { chat_id: chat, text: `${textoFinal(d)}
+
+— Respondé a este mensaje con otro texto para cambiar el caption.`.slice(0, 4096), reply_markup: botones });
+      for (const x of [v, m]) if (x?.result?.message_id) await env.DB.prepare("INSERT OR REPLACE INTO mensajes_tg (chat_id, message_id, propuesta_id) VALUES (?, ?, ?)").bind(chat, x.result.message_id, id).run();
+    }
+    return;
+  }
   if (p.tipo === "prospecto") {
     const d = JSON.parse(p.datos);
     const botones = { inline_keyboard: [[{ text: "✅ Aprobar", callback_data: "ok:" + id }, { text: "🔄 Otra", callback_data: "otra:" + id }, { text: "❌ Descartar", callback_data: "no:" + id }]] };
@@ -342,6 +367,18 @@ async function accionPropuesta(env, id, accion, cambios = null, chat = null) {
     if (p.estado === "pendiente") {
       await env.DB.prepare("UPDATE propuestas SET estado = 'descartada', actualizado = datetime('now') WHERE id = ?").bind(id).run();
     }
+    if (p.tipo === "articulo") {
+      await registrar(env, p.cliente_id, "escribiendo", "otra versión del artículo");
+      await despacharWorkflow(env, "seo.yml", { cliente: p.cliente_id, tema: datos.palabra_clave || "" });
+      if (chat) await responder(env, chat, "🌐 Escribiendo otro artículo... (1 o 2 minutos)");
+      return { ok: true, nota: "Escribiendo otro artículo (1–2 minutos)" };
+    }
+    if (p.tipo === "video") {
+      await registrar(env, p.cliente_id, "generando_video", datos.pedido || datos.producto || "otro Reel");
+      await despacharWorkflow(env, "video.yml", { cliente: p.cliente_id, pedido: datos.pedido || "", producto: datos.producto || "" });
+      if (chat) await responder(env, chat, "🎬 Armando otro Reel... (3 a 5 minutos)");
+      return { ok: true, nota: "Armando otro Reel (3 a 5 minutos)" };
+    }
     if (p.tipo === "prospecto") {
       await otraProspecto(env, datos, chat);
       return { ok: true, nota: "En 1 o 2 minutos llega otra versión" };
@@ -401,7 +438,7 @@ async function aprobarSegunTipo(env, id) {
 // Ejecuta una propuesta aprobada según su tipo.
 function ejecutar(env, id) {
   return env.DB.prepare("SELECT tipo FROM propuestas WHERE id = ?").bind(id).first()
-    .then((p) => ({ respuesta: ejecutarRespuesta, mensaje: ejecutarMensaje, resena: ejecutarResena, email: ejecutarEmail, anuncio: ejecutarAnuncio, prospecto: ejecutarProspecto }[p?.tipo] || publicar)(env, id));
+    .then((p) => ({ respuesta: ejecutarRespuesta, mensaje: ejecutarMensaje, resena: ejecutarResena, email: ejecutarEmail, anuncio: ejecutarAnuncio, prospecto: ejecutarProspecto, articulo: ejecutarArticulo }[p?.tipo] || publicar)(env, id));
 }
 
 // Publica una propuesta aprobada. Si Instagram todavía está procesando la imagen, queda "aprobada"
@@ -471,7 +508,7 @@ async function apiAgente(req, env, ctx, ruta, url) {
     const id = url.searchParams.get("cliente");
     const c = await env.DB.prepare("SELECT id, nombre, marca, calendario, zona FROM clientes WHERE id = ?").bind(id).first();
     if (!c) return Response.json({ error: "no existe el cliente" }, { status: 404 });
-    const fotos = await env.DB.prepare("SELECT id, producto, nombre FROM fotos WHERE cliente_id = ? ORDER BY nombre").bind(id).all();
+    const fotos = await env.DB.prepare("SELECT id, producto, nombre, tipo FROM fotos WHERE cliente_id = ? ORDER BY nombre").bind(id).all();
     const historial = await env.DB.prepare(
       "SELECT titulo, json_extract(datos, '$.foto_id') AS foto_id, json_extract(datos, '$.producto') AS producto, actualizado " +
       "FROM propuestas WHERE cliente_id = ? AND estado = 'publicada' ORDER BY actualizado"
@@ -506,6 +543,8 @@ async function apiAgente(req, env, ctx, ruta, url) {
     return Response.json({ ok: true, id });
   }
 
+  const seo = await apiSeoAgente(req, env, ruta, url);
+  if (seo) return seo;
   if (ruta.startsWith("seguridad/")) return apiSeguridadAgente(req, env, ruta.slice("seguridad/".length));
   if (ruta.startsWith("prospeccion/")) return apiProspector(req, env, ruta.slice("prospeccion/".length), url);
 
@@ -517,6 +556,20 @@ async function apiAgente(req, env, ctx, ruta, url) {
   if (ruta === "investigacion" && req.method === "POST") {
     const b = await req.json();
     return Response.json(await guardarInvestigacion(env, b.cliente_id, b.datos));
+  }
+
+  if (ruta === "video" && req.method === "POST") {
+    const b = await req.json();
+    const c = await env.DB.prepare("SELECT * FROM clientes WHERE id = ?").bind(b.cliente_id).first();
+    if (!c) return Response.json({ error: "no existe el cliente" }, { status: 404 });
+    const id = `${c.id}-v${Date.now().toString(36)}${hex(crypto.getRandomValues(new Uint8Array(4)))}`;
+    await env.ARCHIVOS.put("vid:" + id, base64ABytes(b.video_b64));
+    await env.ARCHIVOS.put("img:" + id, base64ABytes(b.portada_b64));
+    const datos = { ...b.datos, ...(c.auto_publicar ? { auto_pendiente: true } : {}) };
+    await env.DB.prepare("INSERT INTO propuestas (id, cliente_id, tipo, titulo, datos) VALUES (?, ?, 'video', ?, ?)").bind(id, c.id, b.titulo, JSON.stringify(datos)).run();
+    await registrar(env, c.id, "video", `Reel listo: ${b.titulo}`);
+    if (!c.auto_publicar) await enviarVistaPrevia(env, id);
+    return Response.json({ ok: true, id });
   }
 
   if (ruta === "aviso" && req.method === "POST") {
@@ -593,6 +646,29 @@ async function apiPanel(req, env, ctx, yo, ruta, url) {
     return Response.json(await accionPropuesta(env, accion[1], accion[2], b));
   }
 
+  if (ruta === "generar-articulo" && metodo === "POST") {
+    const b = await cuerpo();
+    if (!puede(yo, b.cliente)) return SIN_PERMISO();
+    await registrar(env, b.cliente, "escribiendo", b.tema || "un artículo para el blog");
+    await despacharWorkflow(env, "seo.yml", { cliente: b.cliente, tema: b.tema || "" });
+    return Response.json({ ok: true });
+  }
+  const blogCfg = ruta.match(/^clientes\/([\w-]+)\/blog$/);
+  if (blogCfg && metodo === "POST") {
+    if (!puede(yo, blogCfg[1])) return SIN_PERMISO();
+    try {
+      return Response.json(await guardarSeo(env, blogCfg[1], await cuerpo()));
+    } catch (e) {
+      return Response.json({ error: e.message }, { status: 400 });
+    }
+  }
+  if (ruta === "generar-video" && metodo === "POST") {
+    const b = await cuerpo();
+    if (!puede(yo, b.cliente)) return SIN_PERMISO();
+    await registrar(env, b.cliente, "generando_video", b.pedido || "Reel");
+    await despacharWorkflow(env, "video.yml", { cliente: b.cliente, pedido: b.pedido || "", producto: "" });
+    return Response.json({ ok: true });
+  }
   if (ruta === "generar" && metodo === "POST") {
     const b = await cuerpo();
     if (!puede(yo, b.cliente)) return SIN_PERMISO();
@@ -1109,6 +1185,19 @@ async function tareasProgramadas(env) {
     }
   }
 
+  // 1b. Reels de la semana: con 1 por semana los miércoles, 2 martes y viernes, 3 lunes, miércoles y viernes
+  for (const c of clientes) {
+    const porSemana = JSON.parse(c.video_config || "{}").por_semana ?? 2;
+    const dias = { 1: ["Wed"], 2: ["Tue", "Fri"], 3: ["Mon", "Wed", "Fri"] }[porSemana] || [];
+    const { fecha, hora } = horaLocal(c.zona);
+    const dia = new Intl.DateTimeFormat("en-US", { timeZone: c.zona, weekday: "short" }).format(new Date());
+    if (!c.ig_token || !dias.includes(dia) || hora < "10:00" || c.ultimo_video === fecha) continue;
+    await env.DB.prepare("UPDATE clientes SET ultimo_video = ? WHERE id = ?").bind(fecha, c.id).run();
+    await registrar(env, c.id, "generando_video", "el Reel de la semana");
+    await despacharWorkflow(env, "video.yml", { cliente: c.id, pedido: "", producto: "" });
+    break;
+  }
+
   // 2. publicaciones que quedaron esperando a Instagram, o trabadas
   await env.DB.prepare(
     "UPDATE propuestas SET estado = 'aprobada' WHERE estado = 'publicando' AND actualizado < datetime('now', '-15 minutes')"
@@ -1141,6 +1230,7 @@ async function tareasProgramadas(env) {
   await proponerResenas(env);
   await nutricionPendiente(env);
   await recordarCobros(env);
+  await articulosSemanales(env);
   await sincronizarAdsSiguiente(env);
   await prospeccionProgramada(env);
 

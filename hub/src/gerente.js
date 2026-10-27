@@ -71,6 +71,7 @@ export async function resumenesDiarios(env) {
     if (await env.ARCHIVOS.get(clave)) continue;
     await env.ARCHIVOS.put(clave, "1", { expirationTtl: 172800 });
     const texto = await armarResumen(env, c.id);
+    await env.DB.prepare("INSERT INTO eventos (cliente_id, tipo, detalle) VALUES (?, 'resumen', 'resumen del día enviado')").bind(c.id).run();
     for (const chat of await destinatarios(env, c.id)) await tg(env, "sendMessage", { chat_id: chat, text: texto.slice(0, 4000), disable_web_page_preview: true });
     return; // uno por pasada
   }
